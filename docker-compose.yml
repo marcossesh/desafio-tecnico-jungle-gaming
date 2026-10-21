@@ -1,0 +1,62 @@
+name: wagering
+
+x-app-env: &app-env
+  ROLES: api,consumer,outbox,scheduler
+  LOG_LEVEL: info
+  DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  SQS_ENDPOINT: http://ministack:4566
+  SQS_INPUT_QUEUE: wager-transactions.fifo
+  SQS_DLQ_QUEUE: wager-transactions-dlq.fifo
+  SQS_EVENTS_QUEUE: wagering-events.fifo
+  SQS_MAX_ATTEMPTS: "5"
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering
+      POSTGRES_DB: wagering
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering -d wagering"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  ministack:
+    # healthcheck embutido na imagem
+    image: ministackorg/ministack:1.5.30
+    ports: ["4566:4566"]
+
+  queues:
+    build: .
+    command: ["bun", "scripts/create-queues.ts"]
+    environment: *app-env
+    depends_on:
+      ministack: { condition: service_healthy }
+    restart: "no"
+
+  app:
+    build: .
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+      queues: { condition: service_completed_successfully }
+    deploy:
+      replicas: 3
+    stop_grace_period: 30s
+
+  nginx:
+    image: nginx:1.30.6-alpine
+    ports: ["3000:80"]
+    volumes: ["./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro"]
+    depends_on:
+      app: { condition: service_healthy }
+
+volumes:
+  pgdata:
