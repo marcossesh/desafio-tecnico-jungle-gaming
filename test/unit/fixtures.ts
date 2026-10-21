@@ -1,4 +1,5 @@
 import { Money } from '../../src/shared/money/money';
+import { type ApplyContext, applyWager } from '../../src/wagering/domain/wager-applier';
 import {
   type CreateWagerTransactionProps,
   WagerTransaction,
@@ -46,6 +47,30 @@ export function wager(
     createdAt: T0,
     ...overrides,
   });
+}
+
+export function applyCtx(overrides: Partial<ApplyContext> = {}): ApplyContext {
+  return {
+    reference: undefined,
+    referenceAlreadyReversed: false,
+    ledgerEntryId: id(),
+    at: T0,
+    nextReferenceCheckAt: new Date(T0.getTime() + 2_000),
+    maxReferenceAttempts: 3,
+    ...overrides,
+  };
+}
+
+export function processed(
+  wallet: Wallet,
+  kind: WagerTransactionKind,
+  amount: string,
+  overrides: Partial<CreateWagerTransactionProps> = {},
+  ctx: Partial<ApplyContext> = {},
+): WagerTransaction {
+  const tx = wager(wallet, kind, amount, overrides);
+  applyWager(tx, wallet, applyCtx(ctx));
+  return tx;
 }
 
 export const Kind = WagerTransactionKind;
