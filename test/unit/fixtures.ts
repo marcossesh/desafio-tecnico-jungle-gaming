@@ -1,4 +1,9 @@
 import { Money } from '../../src/shared/money/money';
+import {
+  type CreateWagerTransactionProps,
+  WagerTransaction,
+} from '../../src/wagering/domain/wager-transaction';
+import { WagerTransactionKind } from '../../src/wagering/domain/wager-transaction-kind';
 import { Wallet } from '../../src/wallet/domain/wallet';
 
 export const T0 = new Date('2026-07-29T15:00:00.000Z');
@@ -18,3 +23,29 @@ export function openWallet(balance = '100.00', currency = 'BRL'): Wallet {
     at: T0,
   }).wallet;
 }
+
+export function wager(
+  wallet: Wallet,
+  kind: WagerTransactionKind,
+  amount: string,
+  overrides: Partial<CreateWagerTransactionProps> = {},
+): WagerTransaction {
+  const externalTransactionId = overrides.externalTransactionId ?? `tx-${id()}`;
+  return WagerTransaction.create({
+    id: id(),
+    providerId: 'provider-a',
+    externalTransactionId,
+    idempotencyKey: `provider-a:${externalTransactionId}`,
+    payloadHash: 'hash',
+    walletId: wallet.id,
+    playerId: wallet.playerId,
+    roundId: 'round-1',
+    gameId: 'fortune-chimp',
+    kind,
+    money: Money.from({ amount, currency: wallet.currency }),
+    createdAt: T0,
+    ...overrides,
+  });
+}
+
+export const Kind = WagerTransactionKind;
