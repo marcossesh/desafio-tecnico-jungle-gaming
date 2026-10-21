@@ -1,22 +1,69 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
-  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
   "files": {
     "includes": ["**", "!**/node_modules", "!**/.claude", "!**/.context", "!**/docs"]
   },
-  "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 110 },
+  "formatter": {
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 110
+  },
   "javascript": {
-    "formatter": { "quoteStyle": "single", "semicolons": "always", "trailingCommas": "all" },
-    "parser": { "unsafeParameterDecoratorsEnabled": true }
+    "formatter": {
+      "quoteStyle": "single",
+      "semicolons": "always",
+      "trailingCommas": "all"
+    },
+    "parser": {
+      "unsafeParameterDecoratorsEnabled": true
+    }
   },
   "linter": {
     "rules": {
       "preset": "recommended",
-      "suspicious": { "noExplicitAny": "error" },
+      "suspicious": {
+        "noExplicitAny": "error"
+      },
       "style": {
         "useImportType": "off",
         "noNonNullAssertion": "error"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["src/**/domain/**", "src/shared/money/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedGlobals": {
+              "level": "error",
+              "options": {
+                "deniedGlobals": {
+                  "parseFloat": "Dinheiro nunca passa por number: use Money.from / bigint.",
+                  "parseInt": "Dinheiro nunca passa por number: use Money.from / bigint."
+                }
+              }
+            },
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@nestjs/*", "@mikro-orm/*", "@aws-sdk/*", "pino", "zod"],
+                    "message": "Dom\u00ednio \u00e9 puro: sem framework, ORM ou infraestrutura."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }
