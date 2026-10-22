@@ -1,6 +1,4 @@
 import { InboxMessage } from '../../messaging/domain/inbox-message';
-import type { EventContext, IntegrationEvent } from '../../messaging/domain/integration-event';
-import { OutboxMessage } from '../../messaging/domain/outbox-message';
 import {
   ApplicationError,
   ConflictError,
@@ -12,17 +10,11 @@ import type { TransactionScope, UnitOfWork } from '../../shared/application/unit
 import { addMs } from '../../shared/domain/backoff';
 import type { Clock, IdGenerator } from '../../shared/domain/ports';
 import type { Money } from '../../shared/money/money';
-import type { Wallet } from '../../wallet/domain/wallet';
-import {
-  WagerTransactionPendingReference,
-  WagerTransactionProcessed,
-  WagerTransactionRejected,
-  WalletBalanceChanged,
-} from '../domain/events';
 import { wagerPayloadHash } from '../domain/payload-hash';
-import { applyWager, type WagerOutcome } from '../domain/wager-applier';
+import { applyWager } from '../domain/wager-applier';
 import { WagerTransaction } from '../domain/wager-transaction';
-import { type WagerTransactionKind, WagerTransactionStatus } from '../domain/wager-transaction-kind';
+import type { WagerTransactionKind } from '../domain/wager-transaction-kind';
+import { recordWagerEffects } from './wager-effects';
 
 export interface WagerCommand {
   providerId: string;
@@ -169,45 +161,21 @@ export class ProcessWagerTransaction {
     });
 
     await scope.transactions.insert(tx);
-    if (outcome.status === WagerTransactionStatus.Processed && outcome.entry) {
-      await scope.ledger.insert(outcome.entry);
-      await scope.wallets.saveBalance(wallet, expectedVersion);
-    }
-    await scope.outbox.add(this.events(tx, wallet, outcome, ctx, at).map((e) => OutboxMessage.enqueue(e)));
-    if (outcome.status === WagerTransactionStatus.Processed) {
-      await scope.transactions.wakeDependents(tx.walletId, tx.providerId, tx.externalTransactionId, at);
-    }
+    await recordWagerEffects(scope, {
+      transaction: tx,
+      wallet,
+      expectedVersion,
+      outcome,
+      eventContext: () => ({
+        eventId: this.ids.next(),
+        correlationId: ctx.correlationId,
+        causationId: ctx.causationId,
+        occurredAt: at,
+      }),
+    });
 
     this.failpoints.hit('process.beforeCommit');
     return { type: 'new', transaction: tx };
-  }
-
-  private events(
-    tx: WagerTransaction,
-    wallet: Wallet,
-    outcome: WagerOutcome,
-    ctx: ProcessContext,
-    at: Date,
-  ): IntegrationEvent<unknown>[] {
-    const context = (): EventContext => ({
-      eventId: this.ids.next(),
-      correlationId: ctx.correlationId,
-      causationId: ctx.causationId,
-      occurredAt: at,
-    });
-    switch (outcome.status) {
-      case WagerTransactionStatus.Processed:
-        return outcome.entry
-          ? [
-              WagerTransactionProcessed.from(tx, context()),
-              WalletBalanceChanged.from(wallet, outcome.entry, context()),
-            ]
-          : [WagerTransactionProcessed.from(tx, context())];
-      case WagerTransactionStatus.Rejected:
-        return [WagerTransactionRejected.from(tx, context())];
-      case WagerTransactionStatus.PendingReference:
-        return [WagerTransactionPendingReference.from(tx, context())];
-    }
   }
 }
 
