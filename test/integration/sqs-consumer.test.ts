@@ -56,7 +56,7 @@ afterAll(async () => {
 });
 
 function consumer(processWager: ProcessWagerTransaction = useCases.processWager()): SqsConsumer {
-  return new SqsConsumer(sqs, processWager, failpointsFrom(''), createLogger('silent'), {
+  return new SqsConsumer(sqs, processWager, failpointsFrom(''), useCases.metrics, createLogger('silent'), {
     consumerName: 'wager-consumer',
     queues,
     maxAttempts: MAX_ATTEMPTS,

@@ -8,7 +8,8 @@ import {
 import type { Logger } from 'pino';
 import type { Env } from '../../config/env';
 import type { Failpoints } from '../../shared/application/failpoints';
-import { ENV, FAILPOINTS, LOGGER, SQS_CLIENT } from '../../shared/infra/core.module';
+import type { Metrics } from '../../shared/application/metrics';
+import { ENV, FAILPOINTS, LOGGER, METRICS, SQS_CLIENT } from '../../shared/infra/core.module';
 import { resolveQueueUrls } from '../../shared/infra/sqs';
 import { ProcessWagerTransaction } from '../application/process-wager-transaction';
 import { SqsConsumer } from './sqs-consumer';
@@ -26,6 +27,7 @@ export class SqsConsumerHost implements OnApplicationBootstrap, BeforeApplicatio
     @Inject(SQS_CLIENT) private readonly sqs: SQSClient,
     @Inject(ProcessWagerTransaction) private readonly processWager: ProcessWagerTransaction,
     @Inject(FAILPOINTS) private readonly failpoints: Failpoints,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -35,7 +37,7 @@ export class SqsConsumerHost implements OnApplicationBootstrap, BeforeApplicatio
       dlq: this.env.SQS_DLQ_QUEUE,
       events: this.env.SQS_EVENTS_QUEUE,
     });
-    this.consumer = new SqsConsumer(this.sqs, this.processWager, this.failpoints, this.logger, {
+    this.consumer = new SqsConsumer(this.sqs, this.processWager, this.failpoints, this.metrics, this.logger, {
       consumerName: WAGER_CONSUMER_NAME,
       queues,
       maxAttempts: this.env.SQS_MAX_ATTEMPTS,

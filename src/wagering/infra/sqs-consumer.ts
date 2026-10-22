@@ -1,6 +1,7 @@
 import {
   ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
   type Message,
   ReceiveMessageCommand,
   SendMessageCommand,
@@ -9,7 +10,9 @@ import {
 import type { Logger } from 'pino';
 import { ApplicationError } from '../../shared/application/errors';
 import type { Failpoints } from '../../shared/application/failpoints';
+import type { Metrics } from '../../shared/application/metrics';
 import { DomainError } from '../../shared/domain/errors';
+import { addLogContext, runWithLogContext } from '../../shared/infra/log-context';
 import { Money } from '../../shared/money/money';
 import type { ProcessWagerTransaction } from '../application/process-wager-transaction';
 import { parseWagerMessage } from './wager-message';
@@ -48,6 +51,7 @@ export class SqsConsumer {
     private readonly sqs: SQSClient,
     private readonly processWager: ProcessWagerTransaction,
     private readonly failpoints: Failpoints,
+    private readonly metrics: Metrics,
     private readonly logger: Logger,
     private readonly settings: SqsConsumerSettings,
   ) {}
@@ -89,6 +93,7 @@ export class SqsConsumer {
       groups.set(group, [...(groups.get(group) ?? []), message]);
     }
     await Promise.all([...groups.values()].map((group) => this.handleGroup(group)));
+    await this.reportDlqDepth();
     return messages.length;
   }
 
@@ -110,7 +115,9 @@ export class SqsConsumer {
         await Promise.all(messages.slice(index).map((m) => this.changeVisibility(m, 0)));
         return;
       }
-      await this.handle(message);
+      await runWithLogContext({ channel: 'sqs', sqsMessageId: message.MessageId }, () =>
+        this.handle(message),
+      );
     }
   }
 
@@ -122,6 +129,12 @@ export class SqsConsumer {
       const envelope = parseWagerMessage(message.Body);
       messageId = envelope.messageId;
       const { idempotencyKey, ...data } = envelope.data;
+      addLogContext({
+        messageId,
+        correlationId: messageId,
+        walletId: data.walletId,
+        providerId: data.providerId,
+      });
       const outcome = await this.processWager.execute(
         { ...data, money: Money.from(data.money) },
         idempotencyKey,
@@ -132,28 +145,25 @@ export class SqsConsumer {
           inbox: { consumerName: this.settings.consumerName, messageId },
         },
       );
-      this.logger.info(
-        {
-          messageId,
-          walletId: data.walletId,
-          providerId: data.providerId,
-          outcome: outcome.type,
-          ...(outcome.type !== 'duplicate_message' && {
-            transactionId: outcome.transaction.id,
-            status: outcome.transaction.status,
-          }),
-        },
-        'wager message processed',
-      );
+      if (outcome.type !== 'duplicate_message') {
+        addLogContext({
+          transactionId: outcome.transaction.id,
+          kind: outcome.transaction.kind,
+          status: outcome.transaction.status,
+          failureCode: outcome.transaction.failureCode,
+        });
+      }
+      this.logger.info({ outcome: outcome.type }, 'wager message processed');
       disposition = { type: 'ack' };
     } catch (error) {
       disposition = classify(error);
-      this.logger.warn({ err: error, messageId, receiveCount, ...disposition }, 'wager message failed');
+      this.logger.warn({ err: error, receiveCount, ...disposition }, 'wager message failed');
     }
 
     if (disposition.type === 'retry' && receiveCount >= this.settings.maxAttempts) {
       disposition = { type: 'dlq', failureCode: disposition.failureCode };
     }
+    this.metrics.sqsMessage(disposition.type);
     switch (disposition.type) {
       case 'ack':
         this.failpoints.hit('consumer.afterCommitBeforeAck');
@@ -164,6 +174,20 @@ export class SqsConsumer {
         const backoff = 2 ** (receiveCount - 1) * this.settings.retryBaseSeconds;
         return this.changeVisibility(message, Math.min(backoff, MAX_VISIBILITY_SECONDS));
       }
+    }
+  }
+
+  private async reportDlqDepth(): Promise<void> {
+    try {
+      const { Attributes } = await this.sqs.send(
+        new GetQueueAttributesCommand({
+          QueueUrl: this.settings.queues.dlq,
+          AttributeNames: ['ApproximateNumberOfMessages'],
+        }),
+      );
+      this.metrics.sqsDlqDepth(Number(Attributes?.ApproximateNumberOfMessages ?? 0));
+    } catch (error) {
+      this.logger.debug({ err: error }, 'dlq depth unavailable');
     }
   }
 
@@ -221,6 +245,7 @@ export class SqsConsumer {
       this.logger.error({ err: error, sqsMessageId: message.MessageId }, 'sqs dead-letter failed');
       return;
     }
+    this.metrics.sqsDeadLettered(failureCode);
     await this.delete(message);
   }
 }
