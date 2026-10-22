@@ -8,6 +8,7 @@ import { createLogger } from '../../src/shared/infra/logger';
 import { systemClock, uuidV7Generator } from '../../src/shared/infra/system';
 import { Money } from '../../src/shared/money/money';
 import {
+  type ProcessWagerSettings,
   ProcessWagerTransaction,
   type WagerCommand,
 } from '../../src/wagering/application/process-wager-transaction';
@@ -21,7 +22,10 @@ export const REFERENCE_BACKOFF = { baseMs: 2_000, capMs: 300_000 };
 export interface UseCases {
   orm: MikroORM;
   openWallet(amount: string): Promise<Wallet>;
-  processWager(failpoints?: FailpointName[]): ProcessWagerTransaction;
+  processWager(
+    failpoints?: FailpointName[],
+    settings?: Partial<ProcessWagerSettings>,
+  ): ProcessWagerTransaction;
   reprocess(
     clock: Clock,
     options?: { maxReferenceAttempts?: number; failpoints?: FailpointName[] },
@@ -40,12 +44,13 @@ export async function createUseCases(databaseUrl: string): Promise<UseCases> {
         initialBalance: Money.from({ amount, currency: 'BRL' }),
         correlationId: 'test',
       }),
-    processWager: (failpoints = []) =>
+    processWager: (failpoints = [], settings = {}) =>
       new ProcessWagerTransaction(uow, uuidV7Generator, systemClock, failpointsFrom(failpoints.join(',')), {
         lockTimeoutMs: 3_000,
         pendingReferenceBaseMs: REFERENCE_BACKOFF.baseMs,
         maxReferenceAttempts: 10,
         maxAttempts: 3,
+        ...settings,
       }),
     reprocess: (clock, options = {}) =>
       new ReprocessPendingReferences(
