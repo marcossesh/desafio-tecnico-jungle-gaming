@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import type { SQL } from 'bun';
 import { runMigrations } from '../../src/shared/infra/migrator';
 import { createTestDatabase, type TestDatabase } from '../support/database';
+import { failure } from '../support/failure';
 
 const MIGRATIONS = [
   '0001_wallets',
@@ -140,16 +141,6 @@ async function post(
 async function walletState(wallet: Row): Promise<{ balance: string; version: number }> {
   const [row] = await sql`SELECT balance, version FROM wallets WHERE id = ${wallet.id}`;
   return row;
-}
-
-// expect(query).rejects nunca dispara a query lazy do Bun.SQL (Bun 1.4) e trava o teste.
-async function failure(statement: PromiseLike<unknown>): Promise<unknown> {
-  try {
-    await statement;
-  } catch (error) {
-    return error;
-  }
-  throw new Error('expected the statement to fail');
 }
 
 const violates = (constraint: string, errno = '23514') => ({ errno, constraint });
