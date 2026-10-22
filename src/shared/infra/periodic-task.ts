@@ -1,4 +1,5 @@
 import type { Logger } from 'pino';
+import { runWithLogContext } from './log-context';
 
 /** Executa `task` a cada `intervalMs` sem sobreposição; `stop` espera o ciclo em andamento. */
 export class PeriodicTask {
@@ -36,7 +37,7 @@ export class PeriodicTask {
 
   private async tick(): Promise<void> {
     try {
-      await this.task();
+      await runWithLogContext({ task: this.name }, this.task);
     } catch (error) {
       this.logger.error({ err: error, task: this.name }, 'periodic task failed');
     }

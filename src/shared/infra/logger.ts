@@ -1,17 +1,22 @@
 import type { LoggerService } from '@nestjs/common';
-import pino, { type Logger } from 'pino';
+import pino, { type DestinationStream, type Logger } from 'pino';
+import { currentLogContext } from './log-context';
 
-export function createLogger(level: string): Logger {
-  return pino({
-    level,
-    base: { service: 'wagering-processor' },
-    timestamp: pino.stdTimeFunctions.isoTime,
-    formatters: { level: (label) => ({ level: label }) },
-    redact: {
-      paths: ['*.authorization', '*.money', '*.balance', '*.balanceBefore', '*.balanceAfter', '*.amount'],
-      censor: '[redacted]',
+export function createLogger(level: string, destination?: DestinationStream): Logger {
+  return pino(
+    {
+      level,
+      mixin: currentLogContext,
+      base: { service: 'wagering-processor' },
+      timestamp: pino.stdTimeFunctions.isoTime,
+      formatters: { level: (label) => ({ level: label }) },
+      redact: {
+        paths: ['*.authorization', '*.money', '*.balance', '*.balanceBefore', '*.balanceAfter', '*.amount'],
+        censor: '[redacted]',
+      },
     },
-  });
+    destination,
+  );
 }
 
 export class NestPinoLogger implements LoggerService {
