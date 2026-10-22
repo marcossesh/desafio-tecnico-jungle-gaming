@@ -9,6 +9,9 @@ import { waitFor } from '../support/wait';
 
 const config = {
   instances: Number(process.env.LOAD_INSTANCES ?? 3),
+  outboxInstances: Number(process.env.LOAD_OUTBOX_INSTANCES ?? 0),
+  // req/s alvo somado entre os usuários virtuais; 0 = sem limite (loop fechado puro)
+  rate: Number(process.env.LOAD_RATE ?? 0),
   concurrency: Number(process.env.LOAD_CONCURRENCY ?? 32),
   durationS: Number(process.env.LOAD_DURATION_S ?? 20),
   warmupS: Number(process.env.LOAD_WARMUP_S ?? 3),
@@ -52,41 +55,16 @@ async function scrapeSum(instances: Instance[], metric: string): Promise<number>
 }
 
 const db = await createTestDatabase();
-const queues = await createTestQueues({ visibilityTimeoutSeconds: 30 });
 // defaults de produção (pool 10, ticks padrão), não os valores acelerados dos testes
-const env = {
-  ...clusterEnv(db.url, queues.env),
+const productionDefaults = {
   DB_POOL_MAX: '10',
   OUTBOX_TICK_MS: '500',
   PENDING_REF_TICK_MS: '1000',
 };
-const instances = await Promise.all(Array.from({ length: config.instances }, () => spawnInstance(env)));
+
+let instances: Instance[] = [];
 let next = 0;
 const target = () => instances[next++ % instances.length] as Instance;
-
-// Consumidor downstream dos eventos: no MiniStack o envio fica mais lento quanto maior a fila (4,6ms → 61ms por lote
-// com 30 mil mensagens), então uma fila nunca consumida mediria o emulador, não o publisher.
-let sinking = true;
-const eventSink = Promise.all(
-  Array.from({ length: 4 }, async () => {
-    while (sinking) {
-      const { Messages = [] } = await queues.sqs.send(
-        new ReceiveMessageCommand({
-          QueueUrl: queues.urls.events,
-          MaxNumberOfMessages: 10,
-          WaitTimeSeconds: 1,
-        }),
-      );
-      if (Messages.length === 0) continue;
-      await queues.sqs.send(
-        new DeleteMessageBatchCommand({
-          QueueUrl: queues.urls.events,
-          Entries: Messages.map((m, i) => ({ Id: String(i), ReceiptHandle: m.ReceiptHandle })),
-        }),
-      );
-    }
-  }),
-);
 
 async function post(path: string, body: unknown, headers: Record<string, string> = {}) {
   return fetch(`${target().baseUrl}${path}`, {
@@ -96,7 +74,56 @@ async function post(path: string, body: unknown, headers: Record<string, string>
   });
 }
 
+// Filas novas por cenário: no MiniStack o envio FIFO custa O(enviadas nos últimos 5 min), e o próximo herdaria o custo.
 async function runScenario(scenario: string): Promise<ScenarioResult> {
+  const queues = await createTestQueues({ visibilityTimeoutSeconds: 30 });
+  const env = { ...clusterEnv(db.url, queues.env), ...productionDefaults };
+  const dedicatedOutbox = config.outboxInstances > 0;
+  const apiInstances = await Promise.all(
+    Array.from({ length: config.instances }, () =>
+      spawnInstance(dedicatedOutbox ? { ...env, ROLES: 'api,consumer,scheduler' } : env),
+    ),
+  );
+  const outboxInstances = await Promise.all(
+    Array.from({ length: config.outboxInstances }, () => spawnInstance({ ...env, ROLES: 'outbox' })),
+  );
+  instances = apiInstances;
+  const all = [...apiInstances, ...outboxInstances];
+
+  // consumidor downstream dos eventos
+  let sinking = true;
+  const eventSink = Promise.all(
+    Array.from({ length: 4 }, async () => {
+      while (sinking) {
+        const { Messages = [] } = await queues.sqs.send(
+          new ReceiveMessageCommand({
+            QueueUrl: queues.urls.events,
+            MaxNumberOfMessages: 10,
+            WaitTimeSeconds: 1,
+          }),
+        );
+        if (Messages.length === 0) continue;
+        await queues.sqs.send(
+          new DeleteMessageBatchCommand({
+            QueueUrl: queues.urls.events,
+            Entries: Messages.map((m, i) => ({ Id: String(i), ReceiptHandle: m.ReceiptHandle })),
+          }),
+        );
+      }
+    }),
+  );
+
+  try {
+    return await measureScenario(scenario, all);
+  } finally {
+    sinking = false;
+    await eventSink;
+    await Promise.all(all.map((instance) => instance.kill('SIGTERM')));
+    await queues.destroy();
+  }
+}
+
+async function measureScenario(scenario: string, all: Instance[]): Promise<ScenarioResult> {
   const walletCount = scenario === 'hot' ? 1 : config.wallets;
   const wallets = await Promise.all(
     Array.from({ length: walletCount }, async () => {
@@ -109,8 +136,8 @@ async function runScenario(scenario: string): Promise<ScenarioResult> {
   );
 
   const before = {
-    conflicts: await scrapeSum(instances, 'wallet_lock_conflicts_total'),
-    retries: await scrapeSum(instances, 'processing_retries_total'),
+    conflicts: await scrapeSum(all, 'wallet_lock_conflicts_total'),
+    retries: await scrapeSum(all, 'processing_retries_total'),
   };
   let maxLockWaiters = 0;
   let sampling = true;
@@ -131,8 +158,15 @@ async function runScenario(scenario: string): Promise<ScenarioResult> {
   const endAt = measureFrom + config.durationS * 1_000;
   const windowStart = new Date(Date.now() + config.warmupS * 1_000);
 
+  let nextSlot = startedAt;
   const virtualUser = async () => {
     while (performance.now() < endAt) {
+      if (config.rate > 0) {
+        const slot = nextSlot;
+        nextSlot += 1_000 / config.rate;
+        const wait = slot - performance.now();
+        if (wait > 0) await Bun.sleep(wait);
+      }
       const wallet = wallets[Math.floor(Math.random() * wallets.length)] as { id: string; playerId: string };
       const externalTransactionId = `load-${Bun.randomUUIDv7()}`;
       const sentAt = performance.now();
@@ -205,8 +239,8 @@ async function runScenario(scenario: string): Promise<ScenarioResult> {
     statuses,
     errorRate: round(((requests - ok) / Math.max(requests, 1)) * 100, 2),
     networkErrors,
-    lockConflicts: (await scrapeSum(instances, 'wallet_lock_conflicts_total')) - before.conflicts,
-    retries: (await scrapeSum(instances, 'processing_retries_total')) - before.retries,
+    lockConflicts: (await scrapeSum(all, 'wallet_lock_conflicts_total')) - before.conflicts,
+    retries: (await scrapeSum(all, 'processing_retries_total')) - before.retries,
     maxLockWaiters,
     outboxLagS: {
       p50: round(Number(lag.p50), 3),
@@ -227,8 +261,12 @@ try {
     os: `${os.type()} ${os.release()}`,
     bun: Bun.version,
     postgres: pg.server_version,
-    setup: `${config.instances} instâncias (todos os papéis, pool ${env.DB_POOL_MAX} cada, lock_timeout 3s), Postgres e MiniStack em Docker, gerador no mesmo host`,
-    load: `${config.concurrency} usuários virtuais em loop fechado, ${config.durationS}s medidos após ${config.warmupS}s de aquecimento, BET de 1.00`,
+    setup: `${
+      config.outboxInstances > 0
+        ? `${config.instances} instâncias api/consumer/scheduler + ${config.outboxInstances} só outbox`
+        : `${config.instances} instâncias (todos os papéis)`
+    }, pool ${productionDefaults.DB_POOL_MAX} cada, lock_timeout 3s; filas e instâncias novas por cenário; Postgres e MiniStack em Docker, gerador no mesmo host`,
+    load: `${config.concurrency} usuários virtuais em loop fechado${config.rate > 0 ? ` limitados a ${config.rate} req/s` : ''}, ${config.durationS}s medidos após ${config.warmupS}s de aquecimento, BET de 1.00`,
     events: 'fila de eventos consumida em paralelo por 4 leitores (downstream simulado)',
   };
   const results: ScenarioResult[] = [];
@@ -265,9 +303,5 @@ try {
   console.log(`\n${report}`);
   if (results.some((r) => !r.consistent)) process.exitCode = 1;
 } finally {
-  sinking = false;
-  await eventSink;
-  await Promise.all(instances.map((instance) => instance.kill('SIGTERM')));
-  await queues.destroy();
   await db.drop();
 }
