@@ -52,7 +52,11 @@ services:
     ports: ["8080:8080"]
     healthcheck:
       # a imagem não tem curl; o endpoint de health fica na porta de gerenciamento
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      test:
+        [
+          "CMD-SHELL",
+          "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3",
+        ]
       interval: 5s
       timeout: 3s
       retries: 40
