@@ -1,5 +1,6 @@
 import type { Subprocess } from 'bun';
 import type { ApiResponse } from './app';
+import { appRoleUrl } from './database';
 
 /** Instância real da aplicação (`bun src/main.ts`) em processo separado. */
 export interface Instance {
@@ -107,7 +108,7 @@ export async function requestWithRetry(
 /** Configuração de uma instância completa (todos os papéis) com workers rápidos para teste. */
 export function clusterEnv(databaseUrl: string, queueEnv: Record<string, string>): Record<string, string> {
   return {
-    DATABASE_URL: databaseUrl,
+    DATABASE_URL: appRoleUrl(databaseUrl),
     ...queueEnv,
     ROLES: 'api,consumer,outbox,scheduler',
     DB_POOL_MAX: '4',

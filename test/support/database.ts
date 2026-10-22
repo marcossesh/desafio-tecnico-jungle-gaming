@@ -1,11 +1,16 @@
 import { SQL } from 'bun';
-import { runMigrations } from '../../src/shared/infra/migrator';
+import { APP_ROLE } from '../../migrations/0007_app_role';
+import { provisionAppRole, runMigrations } from '../../src/shared/infra/migrator';
 
 const TEMPLATE = 'wagering_test_template';
 // Advisory lock serializa (re)construção e clonagem do template entre processos de teste concorrentes.
 const TEMPLATE_LOCK = 72_001;
 
-const baseUrl = process.env.DATABASE_URL ?? 'postgres://wagering:wagering@localhost:5432/wagering';
+const baseUrl =
+  process.env.MIGRATION_DATABASE_URL ??
+  process.env.DATABASE_URL ??
+  'postgres://wagering:wagering@localhost:5432/wagering';
+const appPassword = process.env.APP_DB_PASSWORD ?? 'wagering_app';
 
 export interface TestDatabase {
   url: string;
@@ -37,6 +42,7 @@ function buildTemplate(): Promise<void> {
     await admin.unsafe(`DROP DATABASE IF EXISTS ${TEMPLATE} WITH (FORCE)`);
     await admin.unsafe(`CREATE DATABASE ${TEMPLATE}`);
     await runMigrations(urlFor(TEMPLATE), 'up');
+    await provisionAppRole(urlFor(TEMPLATE), appPassword);
   });
 }
 
@@ -61,4 +67,12 @@ export async function createTestDatabase(options: { migrated?: boolean } = {}): 
       await withAdmin((admin) => admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`));
     },
   };
+}
+
+/** Mesmo banco, conectado como o role restrito da aplicação: é assim que app e workers rodam nos testes. */
+export function appRoleUrl(databaseUrl: string): string {
+  const url = new URL(databaseUrl);
+  url.username = APP_ROLE;
+  url.password = appPassword;
+  return url.toString();
 }

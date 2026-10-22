@@ -16,6 +16,7 @@ import {
 import { ReprocessPendingReferences } from '../../src/wagering/application/reprocess-pending-references';
 import { OpenWallet } from '../../src/wallet/application/open-wallet';
 import type { Wallet } from '../../src/wallet/domain/wallet';
+import { appRoleUrl } from './database';
 
 export const REFERENCE_BACKOFF = { baseMs: 2_000, capMs: 300_000 };
 
@@ -36,7 +37,7 @@ export interface UseCases {
 }
 
 export async function createUseCases(databaseUrl: string): Promise<UseCases> {
-  const orm = await createOrm({ clientUrl: databaseUrl, poolMax: 5 });
+  const orm = await createOrm({ clientUrl: appRoleUrl(databaseUrl), poolMax: 5 });
   const uow = new MikroOrmUnitOfWork(orm);
   const metrics = new PromMetrics();
   return {

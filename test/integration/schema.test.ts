@@ -1,8 +1,8 @@
 // Invariantes provadas no banco com SQL cru, sem passar pela aplicação.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import type { SQL } from 'bun';
+import { SQL } from 'bun';
 import { runMigrations } from '../../src/shared/infra/migrator';
-import { createTestDatabase, type TestDatabase } from '../support/database';
+import { appRoleUrl, createTestDatabase, type TestDatabase } from '../support/database';
 import { failure } from '../support/failure';
 
 const MIGRATIONS = [
@@ -12,6 +12,7 @@ const MIGRATIONS = [
   '0004_inbox_outbox',
   '0005_integrity_triggers',
   '0006_outbox_pending_seq_index',
+  '0007_app_role',
 ];
 
 type Row = Record<string, unknown>;
@@ -178,8 +179,16 @@ describe('migrations', () => {
       expect(await functions()).toEqual([]);
 
       expect(await runMigrations(empty.url, 'up')).toEqual(MIGRATIONS);
-      expect(await runMigrations(empty.url, 'down')).toEqual(['0006_outbox_pending_seq_index']);
-      expect(await runMigrations(empty.url, 'up')).toEqual(['0006_outbox_pending_seq_index']);
+      const appCanInsert = async () => {
+        const [row] = await empty.sql`
+          SELECT has_table_privilege('wagering_app', 'wallet_ledger_entries', 'INSERT') AS granted`;
+        return row.granted;
+      };
+      expect(await appCanInsert()).toBe(true);
+      expect(await runMigrations(empty.url, 'down')).toEqual(['0007_app_role']);
+      expect(await appCanInsert()).toBe(false);
+      expect(await runMigrations(empty.url, 'up')).toEqual(['0007_app_role']);
+      expect(await appCanInsert()).toBe(true);
     } finally {
       await empty.drop();
     }
@@ -645,5 +654,31 @@ describe('inbox and outbox', () => {
     expect(await failure(insert(sql, 'outbox_messages', event({ attempts: -1 })))).toMatchObject(
       violates('outbox_attempts_non_negative'),
     );
+  });
+});
+
+describe('application role', () => {
+  // o role da aplicação é barrado pela permissão, antes mesmo dos triggers
+  const denied = { errno: '42501' };
+
+  test('cannot rewrite the ledger or the inbox, nor delete wallets and transactions', async () => {
+    const wallet = await openWallet();
+    const app = new SQL(appRoleUrl(db.url), { max: 1 });
+    try {
+      expect(await failure(app`UPDATE wallet_ledger_entries SET created_at = now()`)).toMatchObject(denied);
+      expect(await failure(app`DELETE FROM wallet_ledger_entries`)).toMatchObject(denied);
+      expect(await failure(app`TRUNCATE wallet_ledger_entries`)).toMatchObject(denied);
+      expect(await failure(app`UPDATE inbox_messages SET processed_at = now()`)).toMatchObject(denied);
+      expect(await failure(app`DELETE FROM wallets WHERE id = ${wallet.id}`)).toMatchObject(denied);
+      expect(await failure(app`DELETE FROM wager_transactions`)).toMatchObject(denied);
+      expect(await failure(app`DELETE FROM outbox_messages`)).toMatchObject(denied);
+      expect(await failure(app`CREATE TABLE intruder (id int)`)).toMatchObject(denied);
+      // leitura e escrita permitidas seguem funcionando
+      const [row] =
+        await app`SELECT count(*)::int AS n FROM wallet_ledger_entries WHERE wallet_id = ${wallet.id}`;
+      expect(row.n).toBe(1);
+    } finally {
+      await app.close();
+    }
   });
 });

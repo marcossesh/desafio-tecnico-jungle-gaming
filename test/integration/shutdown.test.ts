@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, expect, setDefaultTimeout, test } from 'bun:test';
 import { DeleteQueueCommand, type SQSClient } from '@aws-sdk/client-sqs';
 import { createSqsClient, ensureQueues, type QueueNames, type QueueUrls } from '../../src/shared/infra/sqs';
-import { createTestDatabase, type TestDatabase } from '../support/database';
+import { appRoleUrl, createTestDatabase, type TestDatabase } from '../support/database';
 
 // timing real do broker/processos (backoff de visibilidade, MiniStack pausado, spawn) excede os 5s padrão
 setDefaultTimeout(30_000);
@@ -35,7 +35,7 @@ test('SIGTERM stops every role and exits 0 well within the grace period', async 
       ...process.env,
       PORT: '0',
       ROLES: 'api,consumer,outbox,scheduler',
-      DATABASE_URL: db.url,
+      DATABASE_URL: appRoleUrl(db.url),
       SQS_ENDPOINT: process.env.SQS_ENDPOINT ?? 'http://localhost:4566',
       SQS_INPUT_QUEUE: names.input,
       SQS_DLQ_QUEUE: names.dlq,

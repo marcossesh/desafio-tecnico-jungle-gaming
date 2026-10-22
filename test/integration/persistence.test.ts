@@ -16,7 +16,7 @@ import {
 } from '../../src/wagering/domain/wager-transaction';
 import { WagerTransactionKind } from '../../src/wagering/domain/wager-transaction-kind';
 import { Wallet } from '../../src/wallet/domain/wallet';
-import { createTestDatabase, type TestDatabase } from '../support/database';
+import { appRoleUrl, createTestDatabase, type TestDatabase } from '../support/database';
 import { failure } from '../support/failure';
 import { assertLedgerConsistent } from '../support/ledger';
 
@@ -26,7 +26,7 @@ let uow: MikroOrmUnitOfWork;
 
 beforeAll(async () => {
   db = await createTestDatabase();
-  orm = await createOrm({ clientUrl: db.url, poolMax: 4 });
+  orm = await createOrm({ clientUrl: appRoleUrl(db.url), poolMax: 4 });
   uow = new MikroOrmUnitOfWork(orm);
 });
 

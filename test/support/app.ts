@@ -4,6 +4,7 @@ import { loadEnv } from '../../src/config/env';
 import { METRICS } from '../../src/shared/infra/core.module';
 import { createLogger } from '../../src/shared/infra/logger';
 import type { PromMetrics } from '../../src/shared/infra/metrics';
+import { appRoleUrl } from './database';
 
 export interface ApiResponse {
   status: number;
@@ -32,7 +33,7 @@ export async function startTestApp(
 ): Promise<TestApp> {
   const config = loadEnv({
     ...process.env,
-    DATABASE_URL: databaseUrl,
+    DATABASE_URL: appRoleUrl(databaseUrl),
     SQS_ENDPOINT: process.env.SQS_ENDPOINT ?? 'http://localhost:4566',
     DB_POOL_MAX: '5',
     ROLES: 'api',
