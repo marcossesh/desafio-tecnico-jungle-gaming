@@ -11,6 +11,7 @@ const MIGRATIONS = [
   '0003_wallet_ledger_entries',
   '0004_inbox_outbox',
   '0005_integrity_triggers',
+  '0006_outbox_pending_seq_index',
 ];
 
 type Row = Record<string, unknown>;
@@ -177,8 +178,8 @@ describe('migrations', () => {
       expect(await functions()).toEqual([]);
 
       expect(await runMigrations(empty.url, 'up')).toEqual(MIGRATIONS);
-      expect(await runMigrations(empty.url, 'down')).toEqual(['0005_integrity_triggers']);
-      expect(await runMigrations(empty.url, 'up')).toEqual(['0005_integrity_triggers']);
+      expect(await runMigrations(empty.url, 'down')).toEqual(['0006_outbox_pending_seq_index']);
+      expect(await runMigrations(empty.url, 'up')).toEqual(['0006_outbox_pending_seq_index']);
     } finally {
       await empty.drop();
     }
