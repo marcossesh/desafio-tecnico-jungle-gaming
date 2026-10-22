@@ -13,6 +13,7 @@ setDefaultTimeout(30_000);
 const WALLETS = 4;
 const LOAD_MS = 6_000;
 const KILL_EVERY_MS = 800;
+const MIN_KILLS = 4;
 
 let db: TestDatabase;
 let sql: SQL;
@@ -110,10 +111,11 @@ test('SIGKILL of random instances under load still converges to consistent walle
   };
 
   const producers = [httpProducer(), httpProducer(), httpProducer(), sqsProducer()];
+  // tempo mínimo de carga E número mínimo de kills: respawn fica mais lento com a máquina ocupada
   await Bun.sleep(LOAD_MS);
+  while (kills < MIN_KILLS) await Bun.sleep(100);
   loading = false;
   await Promise.all([...producers, chaos]);
-  expect(kills).toBeGreaterThanOrEqual(4);
   expect(operations.length).toBeGreaterThan(200);
 
   await waitFor(
