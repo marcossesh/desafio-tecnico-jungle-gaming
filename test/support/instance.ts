@@ -38,15 +38,19 @@ export async function spawnInstance(env: Record<string, string>): Promise<Instan
   void pump(child.stdout);
   void pump(child.stderr);
 
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const port = await Promise.race([
     started,
     child.exited.then((code) => {
       throw new Error(`instance exited (${code}) before starting:\n${output}`);
     }),
-    Bun.sleep(STARTUP_TIMEOUT_MS).then(() => {
-      throw new Error(`instance did not start in ${STARTUP_TIMEOUT_MS}ms:\n${output}`);
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`instance did not start in ${STARTUP_TIMEOUT_MS}ms:\n${output}`)),
+        STARTUP_TIMEOUT_MS,
+      );
     }),
-  ]);
+  ]).finally(() => clearTimeout(timer));
 
   return {
     port,
