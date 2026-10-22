@@ -44,12 +44,12 @@ export class OutboxPublisherHost implements OnApplicationBootstrap, BeforeApplic
       this.clock,
       this.metrics,
       this.logger,
-      { batchSize: 50, leaseMs: this.env.OUTBOX_LEASE_MS, backoff: DEFAULT_OUTBOX_BACKOFF },
+      { batchSize: 100, leaseMs: this.env.OUTBOX_LEASE_MS, backoff: DEFAULT_OUTBOX_BACKOFF },
     );
     this.task = new PeriodicTask(
       'outbox-publisher',
       this.env.OUTBOX_TICK_MS,
-      () => publish.runOnce(),
+      () => publish.drain(),
       this.logger,
     );
     this.task.start();

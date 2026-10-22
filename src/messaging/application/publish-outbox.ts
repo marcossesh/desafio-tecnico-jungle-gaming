@@ -28,6 +28,19 @@ export class PublishOutbox {
     private readonly settings: PublishOutboxSettings,
   ) {}
 
+  /** Repete enquanto os lotes vierem cheios: sob carga, esperar o próximo tick por lote fazia o backlog crescer. */
+  async drain(maxBatches = 20): Promise<PublishReport> {
+    const total: PublishReport = { claimed: 0, published: 0, failed: 0 };
+    for (let batch = 0; batch < maxBatches; batch++) {
+      const report = await this.runOnce();
+      total.claimed += report.claimed;
+      total.published += report.published;
+      total.failed += report.failed;
+      if (report.claimed < this.settings.batchSize || report.failed > 0) break;
+    }
+    return total;
+  }
+
   async runOnce(): Promise<PublishReport> {
     const now = this.clock.now();
     const claimed = await this.uow.run(({ outbox }) =>

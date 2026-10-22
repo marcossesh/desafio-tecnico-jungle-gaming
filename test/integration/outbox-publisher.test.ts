@@ -68,14 +68,16 @@ class CountingPublisher implements EventPublisher {
   }
 }
 
-function publisherWith(options: { clock?: Clock; publisher?: EventPublisher; metrics?: PromMetrics } = {}) {
+function publisherWith(
+  options: { clock?: Clock; publisher?: EventPublisher; metrics?: PromMetrics; batchSize?: number } = {},
+) {
   return new PublishOutbox(
     new MikroOrmUnitOfWork(useCases.orm),
     options.publisher ?? new SqsEventPublisher(sqs, queues.events),
     options.clock ?? systemClock,
     options.metrics ?? new PromMetrics(),
     createLogger('silent'),
-    { batchSize: 50, leaseMs: LEASE_MS, backoff: BACKOFF },
+    { batchSize: options.batchSize ?? 50, leaseMs: LEASE_MS, backoff: BACKOFF },
   );
 }
 
@@ -242,6 +244,16 @@ describe('PublishOutbox', () => {
     const [row] =
       await sql`SELECT count(*)::int AS n FROM outbox_messages WHERE published_at = to_timestamp(0)`;
     expect(row.n).toBe(0);
+    await drainEvents();
+  });
+
+  test('drain keeps publishing full batches in the same tick and stops at the first partial one', async () => {
+    await walletWithBets(2); // 5 eventos
+    const counting = new CountingPublisher(new SqsEventPublisher(sqs, queues.events));
+    const report = await publisherWith({ publisher: counting, batchSize: 2 }).drain();
+    expect(report).toEqual({ claimed: 5, published: 5, failed: 0 });
+    expect(counting.sent).toHaveLength(5);
+    expect(await unpublishedCount()).toBe(0);
     await drainEvents();
   });
 
