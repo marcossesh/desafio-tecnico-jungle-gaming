@@ -1,4 +1,12 @@
-export type ErrorKind = 'validation' | 'not_found' | 'conflict' | 'unprocessable' | 'transient' | 'internal';
+export type ErrorKind =
+  | 'validation'
+  | 'unauthenticated'
+  | 'forbidden'
+  | 'not_found'
+  | 'conflict'
+  | 'unprocessable'
+  | 'transient'
+  | 'internal';
 
 export class ApplicationError extends Error {
   constructor(

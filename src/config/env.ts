@@ -40,7 +40,7 @@ const schema = z.object({
   PENDING_REF_CAP_MS: int(300_000),
   PENDING_REF_MAX_ATTEMPTS: int(10),
 
-  AUTH_MODE: z.enum(['none', 'keycloak']).default('none'),
+  AUTH_MODE: z.enum(['none']).default('none'),
   FAILPOINTS: z.string().default(''),
 });
 

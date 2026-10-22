@@ -14,6 +14,8 @@ interface HttpErrorBody {
 
 const STATUS_BY_KIND: Readonly<Record<ErrorKind, number>> = {
   validation: 400,
+  unauthenticated: 401,
+  forbidden: 403,
   not_found: 404,
   conflict: 409,
   unprocessable: 422,
