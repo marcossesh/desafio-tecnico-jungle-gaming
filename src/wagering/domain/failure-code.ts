@@ -2,6 +2,7 @@
 export enum FailureCode {
   InsufficientFunds = 'INSUFFICIENT_FUNDS',
   InsufficientFundsForReversal = 'INSUFFICIENT_FUNDS_FOR_REVERSAL',
+  BalanceLimitExceeded = 'BALANCE_LIMIT_EXCEEDED',
   CurrencyMismatch = 'CURRENCY_MISMATCH',
   WalletPlayerMismatch = 'WALLET_PLAYER_MISMATCH',
   ReferenceNotFound = 'REFERENCE_NOT_FOUND',

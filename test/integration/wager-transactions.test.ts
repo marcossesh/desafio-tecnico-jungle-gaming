@@ -137,6 +137,23 @@ describe('BET / WIN / LOSS', () => {
     expect(await eventTypes(res.body.transactionId)).toEqual(['WagerTransactionRejected']);
   });
 
+  test('a WIN past the balance limit is REJECTED BALANCE_LIMIT_EXCEEDED: persisted, replayable, balance untouched', async () => {
+    const wallet = await openWallet('999999999999999999.00');
+    const win = payload(wallet, { kind: 'WIN', money: brl('1.00') });
+    const res = await submit(win);
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      status: 'REJECTED',
+      failureCode: 'BALANCE_LIMIT_EXCEEDED',
+      balance: brl('999999999999999999.00'),
+    });
+    expect(await ledgerCount(res.body.transactionId)).toBe(0);
+    expect(await balanceOf(wallet)).toEqual({ balance: '999999999999999999.00', version: 1 });
+    expect(await eventTypes(res.body.transactionId)).toEqual(['WagerTransactionRejected']);
+    expect((await submit(win)).body).toEqual({ ...res.body, idempotentReplay: true });
+  });
+
   test('WIN credits, with or without a BET reference', async () => {
     const wallet = await openWallet('100.00');
     const bet = await processed(wallet, { money: brl('10.00') });

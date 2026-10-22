@@ -19,6 +19,12 @@ export class InsufficientFundsError extends DomainError {
   }
 }
 
+export class BalanceLimitExceededError extends DomainError {
+  constructor(walletId: string) {
+    super('BALANCE_LIMIT_EXCEEDED', `Balance limit exceeded in wallet ${walletId}`);
+  }
+}
+
 export class Wallet {
   private constructor(
     readonly id: string,
@@ -89,13 +95,18 @@ export class Wallet {
     return !this._balance.isLessThan(money);
   }
 
+  canCredit(money: Money): boolean {
+    this.assertSameCurrency(money);
+    return this._balance.canAdd(money);
+  }
+
   debit(money: Money, transactionId: string, entryId: string, at: Date): WalletLedgerEntry {
     if (!this.canDebit(money)) throw new InsufficientFundsError(this.id);
     return this.apply(LedgerDirection.Debit, money, transactionId, entryId, at);
   }
 
   credit(money: Money, transactionId: string, entryId: string, at: Date): WalletLedgerEntry {
-    this.assertSameCurrency(money);
+    if (!this.canCredit(money)) throw new BalanceLimitExceededError(this.id);
     return this.apply(LedgerDirection.Credit, money, transactionId, entryId, at);
   }
 

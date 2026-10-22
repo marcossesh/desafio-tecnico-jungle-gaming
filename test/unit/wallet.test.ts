@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { InvariantViolationError } from '../../src/shared/domain/errors';
 import { CurrencyMismatchError, Money } from '../../src/shared/money/money';
 import { LedgerDirection } from '../../src/wallet/domain/ledger-direction';
-import { InsufficientFundsError, Wallet } from '../../src/wallet/domain/wallet';
+import { BalanceLimitExceededError, InsufficientFundsError, Wallet } from '../../src/wallet/domain/wallet';
 import { WalletLedgerEntry } from '../../src/wallet/domain/wallet-ledger-entry';
 import { brl, id, openWallet, PLAYER_ID, T0, usd } from './fixtures';
 
@@ -93,6 +93,15 @@ describe('Wallet movements', () => {
     wallet.debit(brl('10.00'), id(), id(), T1);
     expect(wallet.balance.isZero()).toBe(true);
     expect(wallet.canDebit(brl('0.01'))).toBe(false);
+  });
+
+  test('crediting past the persistable maximum throws and leaves the wallet untouched', () => {
+    const wallet = openWallet('999999999999999999.00');
+    wallet.credit(brl('0.99'), id(), id(), T1);
+    expect(wallet.balance.amount).toBe('999999999999999999.99');
+    expect(wallet.canCredit(brl('0.01'))).toBe(false);
+    expect(() => wallet.credit(brl('0.01'), id(), id(), T1)).toThrow(BalanceLimitExceededError);
+    expect(wallet.version).toBe(2);
   });
 
   test('operation currency must match the wallet currency', () => {

@@ -73,6 +73,8 @@ describe('Money arithmetic', () => {
 
   test('rejects results outside the persistable range', () => {
     expect(() => brl('999999999999999999.99').add(brl('0.01'))).toThrow(InvalidMoneyError);
+    expect(brl('999999999999999999.98').canAdd(brl('0.01'))).toBe(true);
+    expect(brl('999999999999999999.99').canAdd(brl('0.01'))).toBe(false);
   });
 
   test('subtract and negate can go negative internally; serialization keeps the sign', () => {

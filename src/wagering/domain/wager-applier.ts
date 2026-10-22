@@ -54,6 +54,10 @@ export function applyWager(tx: WagerTransaction, wallet: Wallet, ctx: ApplyConte
     // operacionalmente diferentes: aposta sem saldo vs. reversão que deixaria saldo negativo
     return reject(tx.isReversal() ? FailureCode.InsufficientFundsForReversal : FailureCode.InsufficientFunds);
   }
+  // o saldo cabe em numeric(20,2); o crédito que passaria do teto depende do estado da wallet, não do payload
+  if (direction === LedgerDirection.Credit && !wallet.canCredit(tx.money)) {
+    return reject(FailureCode.BalanceLimitExceeded);
+  }
 
   const entry =
     direction === LedgerDirection.Debit

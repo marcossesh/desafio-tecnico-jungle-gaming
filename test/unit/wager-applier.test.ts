@@ -82,6 +82,13 @@ describe('WIN', () => {
     });
     expectRejected(win, wallet, FailureCode.ReferenceAlreadyReversed, '90.00');
   });
+
+  test('a credit past the balance limit is rejected without moving the balance', () => {
+    const wallet = openWallet('999999999999999999.00');
+    const win = processed(wallet, Kind.Win, '1.00');
+    expectRejected(win, wallet, FailureCode.BalanceLimitExceeded, '999999999999999999.00');
+    expect(wallet.version).toBe(1);
+  });
 });
 
 describe('LOSS', () => {

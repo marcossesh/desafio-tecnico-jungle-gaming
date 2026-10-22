@@ -73,6 +73,12 @@ export class Money {
     return Money.ofMinor(this.minor + other.minor, this.currency);
   }
 
+  /** `false` quando a soma passaria do maior valor persistível. */
+  canAdd(other: Money): boolean {
+    this.assertSameCurrency(other);
+    return this.minor + other.minor <= MAX_MINOR;
+  }
+
   subtract(other: Money): Money {
     this.assertSameCurrency(other);
     return Money.ofMinor(this.minor - other.minor, this.currency);
