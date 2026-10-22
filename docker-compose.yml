@@ -33,6 +33,14 @@ services:
     image: ministackorg/ministack:1.5.30
     ports: ["4566:4566"]
 
+  migrate:
+    build: .
+    command: ["bun", "scripts/migrate.ts", "up"]
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
   queues:
     build: .
     command: ["bun", "scripts/create-queues.ts"]
@@ -45,7 +53,7 @@ services:
     build: .
     environment: *app-env
     depends_on:
-      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
       queues: { condition: service_completed_successfully }
     deploy:
       replicas: 3

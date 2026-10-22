@@ -11,6 +11,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.json ./
 COPY src ./src
 COPY scripts ./scripts
+COPY migrations ./migrations
 USER bun
 EXPOSE 3000
 STOPSIGNAL SIGTERM
