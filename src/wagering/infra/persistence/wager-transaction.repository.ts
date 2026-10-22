@@ -1,6 +1,7 @@
 import type { EntityManager, FilterQuery } from '@mikro-orm/postgresql';
 import type { WagerTransactionRepository } from '../../application/ports';
 import type { WagerTransaction } from '../../domain/wager-transaction';
+import { WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction-kind';
 import {
   type WagerTransactionRecord,
   WagerTransactionSchema,
@@ -34,6 +35,33 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
 
   findByExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined> {
     return this.findOne({ providerId, externalTransactionId });
+  }
+
+  async hasProcessedReversal(referenceTransactionId: string): Promise<boolean> {
+    const count = await this.em.count(WagerTransactionSchema, {
+      referenceTransactionId,
+      status: WagerTransactionStatus.Processed,
+      kind: { $in: [WagerTransactionKind.Refund, WagerTransactionKind.Rollback] },
+    });
+    return count > 0;
+  }
+
+  wakeDependents(
+    walletId: string,
+    providerId: string,
+    externalTransactionId: string,
+    at: Date,
+  ): Promise<number> {
+    return this.em.nativeUpdate(
+      WagerTransactionSchema,
+      {
+        walletId,
+        providerId,
+        referenceExternalTransactionId: externalTransactionId,
+        status: WagerTransactionStatus.PendingReference,
+      },
+      { nextReferenceCheckAt: at, updatedAt: at },
+    );
   }
 
   private async findOne(where: FilterQuery<WagerTransactionRecord>): Promise<WagerTransaction | undefined> {

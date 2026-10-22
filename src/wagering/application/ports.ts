@@ -7,4 +7,13 @@ export interface WagerTransactionRepository {
   findById(id: string): Promise<WagerTransaction | undefined>;
   findByIdempotencyKey(idempotencyKey: string): Promise<WagerTransaction | undefined>;
   findByExternalId(providerId: string, externalTransactionId: string): Promise<WagerTransaction | undefined>;
+  /** Existe REFUND/ROLLBACK `PROCESSED` apontando para esta transação? */
+  hasProcessedReversal(referenceTransactionId: string): Promise<boolean>;
+  /** Antecipa a re-verificação das transações que aguardam `externalTransactionId`. */
+  wakeDependents(
+    walletId: string,
+    providerId: string,
+    externalTransactionId: string,
+    at: Date,
+  ): Promise<number>;
 }
