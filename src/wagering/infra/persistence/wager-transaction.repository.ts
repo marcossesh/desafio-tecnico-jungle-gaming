@@ -1,5 +1,5 @@
-import type { EntityManager, FilterQuery } from '@mikro-orm/postgresql';
-import type { WagerTransactionRepository } from '../../application/ports';
+import { type EntityManager, type FilterQuery, LockMode } from '@mikro-orm/postgresql';
+import type { ClaimedTransaction, WagerTransactionRepository } from '../../application/ports';
 import type { WagerTransaction } from '../../domain/wager-transaction';
 import { WagerTransactionKind, WagerTransactionStatus } from '../../domain/wager-transaction-kind';
 import {
@@ -29,6 +29,15 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
     return this.findOne({ id });
   }
 
+  async lockById(id: string): Promise<WagerTransaction | undefined> {
+    const record = await this.em.findOne(
+      WagerTransactionSchema,
+      { id },
+      { lockMode: LockMode.PESSIMISTIC_WRITE, disableIdentityMap: true },
+    );
+    return record ? wagerTransactionToDomain(record) : undefined;
+  }
+
   findByIdempotencyKey(idempotencyKey: string): Promise<WagerTransaction | undefined> {
     return this.findOne({ idempotencyKey });
   }
@@ -44,6 +53,21 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
       kind: { $in: [WagerTransactionKind.Refund, WagerTransactionKind.Rollback] },
     });
     return count > 0;
+  }
+
+  async claimDuePendingReferences(now: Date, leaseUntil: Date, limit: number): Promise<ClaimedTransaction[]> {
+    const rows = await this.em.execute<{ id: string; wallet_id: string }[]>(
+      `UPDATE wager_transactions SET next_reference_check_at = ?, updated_at = ?
+        WHERE id IN (
+          SELECT id FROM wager_transactions
+           WHERE status = 'PENDING_REFERENCE' AND next_reference_check_at <= ?
+           ORDER BY next_reference_check_at
+           LIMIT ?
+           FOR UPDATE SKIP LOCKED)
+        RETURNING id, wallet_id`,
+      [leaseUntil, now, now, limit],
+    );
+    return rows.map((row) => ({ id: row.id, walletId: row.wallet_id }));
   }
 
   wakeDependents(
