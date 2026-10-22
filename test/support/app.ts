@@ -50,3 +50,20 @@ export async function startTestApp(databaseUrl: string): Promise<TestApp> {
     close: () => app.close(),
   };
 }
+
+/** N instâncias da app no mesmo banco, cada uma com seu pool; requisições distribuídas em round-robin. */
+export async function startTestCluster(databaseUrl: string, size = 3) {
+  const apps = await Promise.all(Array.from({ length: size }, () => startTestApp(databaseUrl)));
+  let next = 0;
+  return {
+    apps,
+    request: (...args: Parameters<TestApp['request']>) => {
+      const app = apps[next++ % apps.length];
+      if (!app) throw new Error('empty cluster');
+      return app.request(...args);
+    },
+    close: () => Promise.all(apps.map((app) => app.close())),
+  };
+}
+
+export type TestCluster = Awaited<ReturnType<typeof startTestCluster>>;
