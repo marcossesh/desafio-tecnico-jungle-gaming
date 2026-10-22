@@ -14,6 +14,5 @@ export async function createApp(env: Env, logger: Logger): Promise<INestApplicat
   });
   app.use(correlationIdMiddleware);
   app.useGlobalFilters(new HttpErrorFilter(logger));
-  app.enableShutdownHooks();
   return app;
 }

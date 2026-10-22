@@ -10,6 +10,23 @@ async function bootstrap(): Promise<void> {
   await app.listen(env.PORT, '0.0.0.0');
 
   logger.info({ port: env.PORT, roles: env.ROLES }, 'wagering-processor started');
+
+  // Sem enableShutdownHooks: o Nest reenvia o sinal a si mesmo após o close, e como PID 1 no container isso é ignorado.
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      logger.info({ signal }, 'shutting down');
+      app.close().then(
+        () => {
+          logger.info('shutdown complete');
+          process.exit(0);
+        },
+        (err: unknown) => {
+          logger.error({ err }, 'shutdown failed');
+          process.exit(1);
+        },
+      );
+    });
+  }
 }
 
 bootstrap().catch((err: unknown) => {
