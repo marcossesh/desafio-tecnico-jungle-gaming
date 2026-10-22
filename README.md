@@ -26,7 +26,8 @@ docker compose up -d --build --wait
 | Serviço | Papel |
 |---|---|
 | `postgres`, `ministack` | PostgreSQL 18 e SQS (MiniStack, porta 4566) |
-| `migrate` | one-shot: aplica as migrations |
+| `keycloak` | só com `--profile auth`: IdP para `AUTH_MODE=keycloak` (porta 8080) |
+| `migrate` | one-shot: aplica as migrations (como dono do schema) e dá login ao role `wagering_app`, com que as réplicas conectam |
 | `queues` | one-shot: cria `wager-transactions.fifo`, `wager-transactions-dlq.fifo` e `wagering-events.fifo` |
 | `app` ×3 | réplicas com todos os papéis (API, consumidor SQS, outbox publisher, worker de referências) |
 | `nginx` | balanceia as réplicas em **http://localhost:3000** |
@@ -74,6 +75,19 @@ curl -s localhost:3000/metrics           # Prometheus (cada requisição cai num
 ```
 
 Os status HTTP, o envelope de erro, os códigos de falha e os eventos publicados estão documentados no ARCHITECTURE (§12–§14).
+
+### Autenticação (opcional)
+
+Por padrão a API não exige credenciais. Para exigir um token por provedor (Keycloak, `client_credentials`):
+
+```sh
+AUTH_MODE=keycloak docker compose --profile auth up -d --build --wait
+TOKEN=$(curl -s localhost:8080/realms/wagering/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=provider-a -d client_secret=provider-a-secret | grep -o '"access_token":"[^"]*' | cut -d'"' -f4)
+curl -s localhost:3000/wallets/<walletId> -H "authorization: Bearer $TOKEN"
+```
+
+Clients `provider-a` e `provider-b` (segredos de desenvolvimento no realm importado). Sem token → 401; um provedor agindo por outro → 403. Detalhes no ARCHITECTURE §16.
 
 ## Desenvolvimento local
 

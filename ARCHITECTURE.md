@@ -160,8 +160,10 @@ As garantias de unicidade, imutabilidade e não-negatividade valem no banco, ind
 | transação terminal imutável; colunas de negócio imutáveis | trigger em `wager_transactions` |
 | uma reversão processada por referência | índice único parcial `WHERE status = 'PROCESSED' AND kind IN ('REFUND','ROLLBACK')` |
 | `OPENING` só interno e 1 por wallet | `CHECK ((kind = 'OPENING') = (provider_id = 'internal'))` + índice único parcial |
+| a aplicação não reescreve ledger nem inbox | role `wagering_app` (migration 0007): `SELECT, INSERT` em `wallet_ledger_entries` e `inbox_messages`; `SELECT, INSERT, UPDATE` em `wallets`, `wager_transactions` e `outbox_messages`; nada de `DELETE`/`TRUNCATE`/DDL |
 
 - **Migrations:** SQL escrito à mão (MikroORM Migrator, `up`/`down`), porque triggers e índices parciais não sairiam corretos de um diff de schema. Migrator programático com `migrationsList` explícito, executado pelo serviço one-shot `migrate` antes das réplicas.
+- **Role da aplicação:** defesa em profundidade além dos triggers. A app conecta como `wagering_app`; as migrations rodam como dono do schema (`MIGRATION_DATABASE_URL`). A migration cria o role sem login (ele é do cluster, e o `down` só revoga as permissões deste banco); o `migrate` dá login com a senha de `APP_DB_PASSWORD`, que nunca fica na migration. Toda a suíte roda app, workers e processos com esse role, o que prova que as permissões bastam; `schema.test.ts` prova as negativas (`42501`). Tabela nova precisa de `GRANT` explícito na própria migration.
 - **Nomes e erros:** as constraints têm nome explícito. Violações de trigger usam SQLSTATE `23000` (bug do chamador, não erro de negócio).
 - **Testes:** `schema.test.ts` executa `up → down → up` e prova cada invariante em SQL cru, sem passar pela aplicação.
 
@@ -305,12 +307,15 @@ Tradução de erros do Postgres: `23505` vira erro com o nome da constraint (os 
 
 ## 16. Autenticação
 
-**Decisão:** não implementada. Não pontua e competiria com o núcleo financeiro. O ponto de extensão está explícito no código:
+**Decisão:** opcional e desligada por padrão (`AUTH_MODE=none`). Não pontua e não pode competir com o núcleo financeiro, então a avaliação roda sem IdP; com `AUTH_MODE=keycloak`, o Keycloak do compose (profile `auth`) autentica cada provedor.
 
-- `ProviderIdentityPort.resolve(request) → ProviderIdentity | null` (`src/shared/http/provider-identity.ts`), com a implementação `AnonymousProviderIdentity` (`AUTH_MODE=none`, único modo aceito).
-- `ProviderAuthGuard` global: libera `/health/*` e `/metrics`; sem identidade → `401 UNAUTHENTICATED`; `providerId` do corpo ou da rota diferente do da identidade → `403 PROVIDER_MISMATCH`.
-
-**Desenho, se implementada:** Keycloak no compose; um client *confidential* por provedor com `client_credentials`; JWT com claim `provider_id`. Uma nova implementação de `ProviderIdentityPort` valida assinatura via JWKS (`jose`, com cache de chaves), `iss`, `aud` e `exp`, e o guard existente já aplica a regra `provider_id === providerId`. Mensagens SQS são canal interno confiável, mas o `providerId` delas continua sujeito às validações de domínio.
+- **Porta:** `ProviderIdentityPort.resolve(request) → ProviderIdentity | null` (`src/shared/http/provider-identity.ts`). `AnonymousProviderIdentity` (`none`) aceita tudo como canal confiável; `JwtProviderIdentity` (`keycloak`) exige `Authorization: Bearer`.
+- **Token:** um client *confidential* por provedor (`client_credentials`), sem fluxo de usuário. O realm importado (`docker/keycloak/wagering-realm.json`) põe a claim `provider_id` (mapper fixo por client) e o audience `wagering-api`.
+- **Verificação:** `jose` com JWKS remoto (chaves em cache), só `RS256`, `iss`, `aud` e `exp`. Token ausente, inválido, expirado, de outro issuer/audience ou sem `provider_id` → `401 UNAUTHENTICATED`. Sem `AUTH_ISSUER`, a instância não sobe: falha fechada, nunca cai no modo anônimo.
+- **Autorização:** o `ProviderAuthGuard` global libera `/health/*` e `/metrics` e barra o provedor que tenta agir por outro (`providerId` do corpo ou da rota ≠ `provider_id`) com `403 PROVIDER_MISMATCH`.
+- **Issuer × JWKS:** o token é emitido para `http://localhost:8080` (`KC_HOSTNAME`), mas as réplicas leem o JWKS pela rede interna (`AUTH_JWKS_URL`), por isso as duas variáveis são separadas.
+- **SQS:** canal interno confiável (enunciado §2); o `providerId` da mensagem segue sujeito às validações de domínio.
+- **Testes:** `auth.test.ts` assina tokens com uma chave própria servida por um JWKS HTTP real (sem Keycloak no CI) e cobre cada motivo de 401, o 403 e as rotas abertas. O fluxo com o Keycloak real (token por `client_credentials`, 200, 401 sem token, 403 entre provedores) foi validado manualmente com o compose.
 
 ## 17. Configuração
 
@@ -322,7 +327,9 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 | `ROLES` | `api,consumer,outbox,scheduler` | componentes ativos na instância |
 | `LOG_LEVEL` | `info` | |
 | `SHUTDOWN_GRACE_MS` | 25000 | drain no SIGTERM (compose: `stop_grace_period: 30s`) |
-| `DATABASE_URL` | — (obrigatória) | Postgres |
+| `DATABASE_URL` | — (obrigatória) | Postgres, como o role `wagering_app` (§9) |
+| `MIGRATION_DATABASE_URL` | `DATABASE_URL` | só `migrate`: dono do schema |
+| `APP_DB_PASSWORD` | — | só `migrate`: se definida, dá login ao `wagering_app` com essa senha |
 | `DB_POOL_MAX` | 10 | pool por instância |
 | `WALLET_LOCK_TIMEOUT_MS` | 3000 | `lock_timeout` da transação |
 | `SQS_ENDPOINT` | — (obrigatória) | MiniStack/SQS |
@@ -332,7 +339,8 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 | `SQS_RETRY_BASE_SECONDS` | 2 | base do backoff de visibilidade |
 | `OUTBOX_TICK_MS` / `OUTBOX_LEASE_MS` | 500 / 30000 | publisher |
 | `PENDING_REF_TICK_MS` / `PENDING_REF_BASE_MS` / `PENDING_REF_CAP_MS` / `PENDING_REF_MAX_ATTEMPTS` | 1000 / 2000 / 300000 / 10 | worker de referências |
-| `AUTH_MODE` | `none` | §16 |
+| `AUTH_MODE` | `none` | `none` \| `keycloak` (§16) |
+| `AUTH_ISSUER` / `AUTH_AUDIENCE` / `AUTH_JWKS_URL` | — / `wagering-api` / `{issuer}/protocol/openid-connect/certs` | `keycloak`: `iss` e `aud` exigidos e de onde ler as chaves |
 | `FAILPOINTS` | vazio | só testes (`process.beforeCommit`, `reprocess.beforeCommit`, `consumer.afterCommitBeforeAck`) |
 
 ## 18. Testes
@@ -396,7 +404,7 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 - **Erros de trigger com saldo:** as mensagens de erro dos triggers de integridade incluem o saldo; só aparecem em violação de invariante (bug, 500) e então podem chegar ao log.
 - **Métricas por réplica:** atrás do nginx, cada scrape cai numa réplica; em produção, o Prometheus descobriria e rasparia cada instância.
 - **Sem Postgres no boot, a instância não sobe** (o ORM conecta na inicialização); o compose ordena os serviços por healthcheck. Uma indisponibilidade depois do boot vira `503` e retry.
-- **Autenticação** não implementada (§16).
+- **Autenticação** opcional e desligada por padrão; sem rotação de segredos nem escopos por operação (§16).
 
 ## 21. Teste de carga
 
