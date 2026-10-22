@@ -1,5 +1,5 @@
 import { EntitySchema } from '@mikro-orm/postgresql';
-import type { OutboxMessage } from '../../domain/outbox-message';
+import { OutboxMessage } from '../../domain/outbox-message';
 
 export interface OutboxMessageRecord {
   id: string;
@@ -12,9 +12,11 @@ export interface OutboxMessageRecord {
   attempts: number;
   nextAttemptAt: Date;
   publishedAt: Date | null;
+  lockedUntil: Date | null;
+  lastError: string | null;
 }
 
-// `seq`, `locked_until` e `last_error` ficam com o default do banco; o publisher (fase 7) os usa.
+// `seq` (ordem de inserção) é gerado pelo banco e não é mapeado.
 export const OutboxMessageSchema = new EntitySchema<OutboxMessageRecord>({
   name: 'OutboxMessageRecord',
   tableName: 'outbox_messages',
@@ -29,6 +31,8 @@ export const OutboxMessageSchema = new EntitySchema<OutboxMessageRecord>({
     attempts: { type: 'integer' },
     nextAttemptAt: { type: 'datetime' },
     publishedAt: { type: 'datetime', nullable: true },
+    lockedUntil: { type: 'datetime', nullable: true },
+    lastError: { type: 'text', nullable: true },
   },
 });
 
@@ -44,5 +48,11 @@ export function outboxMessageToRecord(message: OutboxMessage): OutboxMessageReco
     attempts: message.attempts,
     nextAttemptAt: message.nextAttemptAt,
     publishedAt: message.publishedAt ?? null,
+    lockedUntil: null,
+    lastError: null,
   };
+}
+
+export function outboxMessageToDomain(record: OutboxMessageRecord): OutboxMessage {
+  return OutboxMessage.rehydrate({ ...record, publishedAt: record.publishedAt ?? undefined });
 }
