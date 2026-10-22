@@ -5,12 +5,26 @@ import {
   SQSClient,
 } from '@aws-sdk/client-sqs';
 
-export function createSqsClient(opts: { endpoint: string; region: string }): SQSClient {
+export function createSqsClient(opts: {
+  endpoint: string;
+  region: string;
+  requestTimeoutMs?: number;
+}): SQSClient {
   // Sem credenciais no ambiente o SDK tenta o IMDS da EC2 e trava; o emulador aceita qualquer par.
   const credentials = process.env.AWS_ACCESS_KEY_ID
     ? undefined
     : { accessKeyId: 'test', secretAccessKey: 'test' };
-  return new SQSClient({ endpoint: opts.endpoint, region: opts.region, ...(credentials && { credentials }) });
+  return new SQSClient({
+    endpoint: opts.endpoint,
+    region: opts.region,
+    // sem timeout, um broker travado prende a chamada para sempre; o default cobre o long poll de 20s
+    requestHandler: {
+      connectionTimeout: 3_000,
+      requestTimeout: opts.requestTimeoutMs ?? 30_000,
+      throwOnRequestTimeout: true,
+    },
+    ...(credentials && { credentials }),
+  });
 }
 
 export interface QueueNames {
