@@ -7,6 +7,9 @@ export class FailpointError extends Error {
   }
 }
 
+// Simulam a morte do processo (como um SIGKILL) em vez de uma exceção tratável.
+const CRASH_FAILPOINTS: ReadonlySet<FailpointName> = new Set(['consumer.afterCommitBeforeAck']);
+
 export function failpointsFrom(spec: string): Failpoints {
   const active = new Set(
     spec
@@ -16,7 +19,9 @@ export function failpointsFrom(spec: string): Failpoints {
   );
   return {
     hit(name) {
-      if (active.has(name)) throw new FailpointError(name);
+      if (!active.has(name)) return;
+      if (CRASH_FAILPOINTS.has(name)) process.exit(137);
+      throw new FailpointError(name);
     },
   };
 }

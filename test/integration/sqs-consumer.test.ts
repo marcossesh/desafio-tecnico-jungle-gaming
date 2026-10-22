@@ -11,6 +11,7 @@ import {
   type SQSClient,
 } from '@aws-sdk/client-sqs';
 import type { SQL } from 'bun';
+import { failpointsFrom } from '../../src/shared/infra/failpoints';
 import { createLogger } from '../../src/shared/infra/logger';
 import { createSqsClient, ensureQueues, type QueueNames, type QueueUrls } from '../../src/shared/infra/sqs';
 import type { ProcessWagerTransaction } from '../../src/wagering/application/process-wager-transaction';
@@ -55,7 +56,7 @@ afterAll(async () => {
 });
 
 function consumer(processWager: ProcessWagerTransaction = useCases.processWager()): SqsConsumer {
-  return new SqsConsumer(sqs, processWager, createLogger('silent'), {
+  return new SqsConsumer(sqs, processWager, failpointsFrom(''), createLogger('silent'), {
     consumerName: 'wager-consumer',
     queues,
     maxAttempts: MAX_ATTEMPTS,

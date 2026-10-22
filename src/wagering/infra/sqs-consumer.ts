@@ -8,6 +8,7 @@ import {
 } from '@aws-sdk/client-sqs';
 import type { Logger } from 'pino';
 import { ApplicationError } from '../../shared/application/errors';
+import type { Failpoints } from '../../shared/application/failpoints';
 import { DomainError } from '../../shared/domain/errors';
 import { Money } from '../../shared/money/money';
 import type { ProcessWagerTransaction } from '../application/process-wager-transaction';
@@ -46,6 +47,7 @@ export class SqsConsumer {
   constructor(
     private readonly sqs: SQSClient,
     private readonly processWager: ProcessWagerTransaction,
+    private readonly failpoints: Failpoints,
     private readonly logger: Logger,
     private readonly settings: SqsConsumerSettings,
   ) {}
@@ -154,6 +156,7 @@ export class SqsConsumer {
     }
     switch (disposition.type) {
       case 'ack':
+        this.failpoints.hit('consumer.afterCommitBeforeAck');
         return this.delete(message);
       case 'dlq':
         return this.deadLetter(message, disposition.failureCode, messageId, receiveCount);
