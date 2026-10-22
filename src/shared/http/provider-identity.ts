@@ -5,10 +5,7 @@ export interface ProviderIdentity {
   providerId: string | null;
 }
 
-/**
- * Ponto de extensão da autenticação: um IdP (ex.: Keycloak com client_credentials por provedor)
- * implementaria `resolve` validando o JWT e lendo a claim `provider_id`; `null` = não autenticado.
- */
+/** Resolve o provedor autenticado da requisição; `null` = não autenticado. */
 export interface ProviderIdentityPort {
   resolve(request: Request): Promise<ProviderIdentity | null>;
 }

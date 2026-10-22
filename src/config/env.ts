@@ -40,14 +40,24 @@ const schema = z.object({
   PENDING_REF_CAP_MS: int(300_000),
   PENDING_REF_MAX_ATTEMPTS: int(10),
 
-  AUTH_MODE: z.enum(['none']).default('none'),
+  AUTH_MODE: z.enum(['none', 'keycloak']).default('none'),
+  AUTH_ISSUER: z.url().optional(),
+  AUTH_AUDIENCE: z.string().default('wagering-api'),
+  // dentro da rede do compose o IdP tem outro host que o `iss` dos tokens
+  AUTH_JWKS_URL: z.url().optional(),
+
   FAILPOINTS: z.string().default(''),
 });
 
 export type Env = z.infer<typeof schema>;
 
+const refined = schema.refine((env) => env.AUTH_MODE === 'none' || env.AUTH_ISSUER !== undefined, {
+  message: 'AUTH_ISSUER is required when AUTH_MODE is keycloak',
+  path: ['AUTH_ISSUER'],
+});
+
 export function loadEnv(source: Record<string, string | undefined> = process.env): Env {
-  const parsed = schema.safeParse(source);
+  const parsed = refined.safeParse(source);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');
     throw new Error(`Invalid environment:\n${issues}`);
