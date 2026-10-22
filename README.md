@@ -98,8 +98,8 @@ docker compose up -d --wait postgres ministack && bun run sqs:create-queues
 | `bun test` | tudo (≈ 1–2 min) |
 | `bun run test:unit` | domínio puro (Money, Wallet, regras, máquina de estados, payload hash) |
 | `bun run test:integration` | schema e migrations, persistência, HTTP, atomicidade, inbox, consumidor SQS e DLQ, outbox, referências pendentes, observabilidade, shutdown |
-| `bun run test:concurrency` | 50 apostas idênticas, disputa de saldo, wallets em paralelo, 3 processos, crash entre commit e ack, `SIGKILL` sob carga |
-| `bun run test:load` | teste de carga (hot wallet × 100 wallets, 3 instâncias reais); relatório em `test/load/results/` e análise no ARCHITECTURE §21 |
+| `bun run test:concurrency` | 50 apostas idênticas, disputa de saldo, reversões concorrentes, wallets em paralelo, 3 processos, crash entre commit e ack, `SIGKILL` sob carga |
+| `bun run test:load` | teste de carga (hot wallet × 100 wallets, 3 instâncias reais; pare as réplicas do compose antes, com `docker compose stop app nginx`, para não disputarem CPU); relatório em `test/load/results/` e análise no ARCHITECTURE §21 |
 
 Cada arquivo de teste usa um banco próprio, clonado de um template migrado, e filas com nome aleatório. Os testes de concorrência sobem processos reais (`bun src/main.ts`). Todo teste de integração e concorrência termina verificando `saldo da wallet == saldo reconstruído pelo ledger`.
 
@@ -114,7 +114,7 @@ Qualidade: `bun run typecheck` · `bun run lint` · `bun run format`. O CI (`.gi
 | `sqs:create-queues` | cria as filas (idempotente) |
 | `sqs:send` | publica uma mensagem de exemplo na fila de entrada |
 | `test`, `test:unit`, `test:integration`, `test:concurrency` | suítes |
-| `test:load` | teste de carga (`LOAD_CONCURRENCY`, `LOAD_DURATION_S`, `LOAD_WALLETS`, `LOAD_SCENARIOS`…) |
+| `test:load` | teste de carga (`LOAD_CONCURRENCY`, `LOAD_RATE`, `LOAD_DURATION_S`, `LOAD_WALLETS`, `LOAD_OUTBOX_INSTANCES`, `LOAD_SCENARIOS`…) |
 | `typecheck`, `lint`, `format` | qualidade |
 
 ## Estrutura
@@ -130,5 +130,5 @@ src/
   health/                          /health/live, /health/ready, /metrics
 migrations/                        SQL escrito à mão (up/down)
 scripts/                           migrate, criação de filas, envio de mensagem
-test/{unit,integration,concurrency,support}
+test/{unit,integration,concurrency,load,support}
 ```

@@ -37,7 +37,7 @@ Todas as instâncias são idênticas e rodam todos os componentes; a variável `
 | Framework | NestJS 12 (express) | obrigatório; usado só nas bordas (HTTP, DI, ciclo de vida) |
 | ORM | **MikroORM 7** com `EntitySchema` | preferencial; `em.transactional()`, `LockMode.PESSIMISTIC_WRITE`. `EntitySchema` evita decorators no domínio e problemas de metadata no Bun |
 | Banco | PostgreSQL 18 | constraints, índices parciais, constraint triggers `DEFERRABLE`, `SKIP LOCKED` |
-| Mensageria | SQS via **MiniStack** 1.5.30 | o LocalStack passou a exigir auth token na imagem unificada (2026.03); o MiniStack é drop-in gratuito. Um spike virou teste (`sqs-emulator.test.ts`): ordem por `MessageGroupId`, dedup, bloqueio de grupo em voo, `ApproximateReceiveCount`, redrive para DLQ FIFO e backoff de visibilidade |
+| Mensageria | SQS via **MiniStack** 1.5.30 | o enunciado permite LocalStack ou MiniStack. O **LocalStack foi avaliado e descartado**: desde a 2026.03 a imagem exige auth token (o plano gratuito Hobby inclui SQS, mas é só para uso não comercial, e avaliador e CI precisariam de conta), e ele tem um bug de visibilidade FIFO que afeta o backoff do consumidor (evidências em §21). O MiniStack sobe sem conta. Um spike virou teste (`sqs-emulator.test.ts`): ordem por `MessageGroupId`, dedup, bloqueio de grupo em voo, `ApproximateReceiveCount`, redrive para DLQ FIFO e backoff de visibilidade |
 | Validação | zod | sem decorators; o mesmo schema valida o corpo HTTP e o `data` da mensagem SQS |
 | Logs / métricas | pino / prom-client | JSON estruturado; formato Prometheus em `/metrics` |
 
@@ -362,11 +362,12 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 | recuperação após reinicialização | `test/integration/shutdown.test.ts`, `test/concurrency/crash-before-ack.test.ts`, `test/concurrency/restart-consistency.test.ts` |
 | 1. mesma aposta 50× em paralelo | `test/concurrency/duplicate-bet.test.ts` |
 | 2. disputa de saldo (100 vs 2×80) | `test/concurrency/balance-race.test.ts` |
+| reversões concorrentes da mesma referência (no máximo uma) | `test/concurrency/reversal-race.test.ts` |
 | 3. wallets distintas em paralelo | `test/concurrency/parallel-wallets.test.ts` |
 | 4. ≥ 3 processos simultâneos | `test/concurrency/multi-instance.test.ts` |
 | 5. worker morto depois do commit e antes do ack | `test/concurrency/crash-before-ack.test.ts` |
 | 6. dois publishers na mesma outbox | `test/integration/outbox-publisher.test.ts` |
-| 7. ROLLBACK/REFUND antes da referência | `test/integration/pending-references.test.ts`, `test/concurrency/restart-consistency.test.ts` |
+| 7. ROLLBACK/REFUND antes da referência | `test/integration/pending-references.test.ts`, `test/concurrency/reversal-race.test.ts`, `test/concurrency/restart-consistency.test.ts` |
 | 8. reinício com consistência final comprovada | `test/concurrency/restart-consistency.test.ts` |
 
 ## 19. Interpretações adotadas
@@ -387,7 +388,7 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 - **Sem tombstone:** um `ROLLBACK` que expira (`REFERENCE_NOT_FOUND`) antes de a `BET` chegar não impede a BET tardia de ser processada.
 - **Ordem de eventos não é estrita** entre retries e falhas parciais de lote; os consumidores devem usar `eventId` (dedup) e `walletVersion` (ordem).
 - **Takeover lento:** o outbox, depois de um crash, espera o lease (30s); o worker de referências também (30s).
-- **Outbox lag sob pico sustentado:** no ambiente local, o publisher não acompanhou ~700 eventos/s (§21); o evento só atrasa, nunca se perde.
+- **Outbox lag sob pico sustentado:** no ambiente local, o lag fica abaixo de 1s até ~400 eventos/s e cresce acima de ~600 eventos/s, onde o MiniStack satura (§21); o evento só atrasa, nunca se perde.
 - **Sem retenção de outbox e inbox:** as tabelas crescem linearmente (índices parciais mantêm o claim barato). Um `DELETE` periódico dos publicados há mais de N dias resolveria.
 - **Ledger simples:** sem double-entry com contas de contrapartida (house/provider).
 - **Erros de trigger com saldo:** as mensagens de erro dos triggers de integridade incluem o saldo; só aparecem em violação de invariante (bug, 500) e então podem chegar ao log.
@@ -397,24 +398,73 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 
 ## 21. Teste de carga
 
-`bun run test:load` (`test/load/run.ts`) sobe **3 instâncias reais** (todos os papéis, pool 10, `lock_timeout` 3s) num banco e em filas dedicados, gera carga em loop fechado direto nas instâncias (para raspar o `/metrics` de cada uma), simula um consumidor downstream da fila de eventos e grava o relatório em `test/load/results/` (`.md` + `.json`, fora do git). Cenários: **distributed** (100 wallets) e **hot** (1 wallet); BET de 1.00. Parâmetros: `LOAD_CONCURRENCY`, `LOAD_DURATION_S`, `LOAD_WARMUP_S`, `LOAD_WALLETS`, `LOAD_INSTANCES`, `LOAD_SCENARIOS`. No fim, todas as wallets passam pela reconciliação.
+`bun run test:load` (`test/load/run.ts`) sobe **3 instâncias reais** (todos os papéis, pool 10, `lock_timeout` 3s) num banco dedicado, com **filas e instâncias novas a cada cenário**, gera carga direto nas instâncias (para raspar o `/metrics` de cada uma), simula um consumidor downstream da fila de eventos e grava o relatório em `test/load/results/` (`.md` + `.json`, fora do git). Cenários: **distributed** (100 wallets) e **hot** (1 wallet); BET de 1.00. Parâmetros: `LOAD_CONCURRENCY`, `LOAD_RATE` (req/s alvo; sem ele, loop fechado puro), `LOAD_DURATION_S`, `LOAD_WARMUP_S`, `LOAD_WALLETS`, `LOAD_INSTANCES`, `LOAD_OUTBOX_INSTANCES` (instâncias só com o papel `outbox`; as demais ficam sem ele), `LOAD_SCENARIOS`. No fim, todas as wallets passam pela reconciliação.
 
-**Ambiente:** notebook i5-12450H (12 threads), 18 GB, Linux 7.0, Bun 1.4.3, PostgreSQL 18.6 e MiniStack em Docker, com gerador e instâncias no mesmo host (que também rodava o desktop). 32 usuários virtuais, 20s medidos após 3s de aquecimento. Os números variaram cerca de ±10% entre execuções; abaixo, a última.
+**Ambiente:** notebook i5-12450H (12 threads), 18 GB, Linux 7.0, Bun 1.4.3, PostgreSQL 18.6 e MiniStack em Docker, com gerador e instâncias no mesmo host (que também rodava o desktop; réplicas do compose paradas). 32 usuários virtuais, 20s medidos após 3s de aquecimento. Os números variaram cerca de ±10% entre execuções (o lag no ponto de saturação, mais).
 
-| Cenário | req/s | p50 | p95 | p99 | Erros | Conflitos de lock | Máx. esperando lock | Outbox lag p50 / p99 | Consistente |
+| Cenário | Carga | req/s | p50 | p95 | p99 | Erros | Conflitos de lock | Outbox lag p50 / p99 | Consistente |
 |---|---|---|---|---|---|---|---|---|---|
-| distributed (100 wallets) | 338 | 84 ms | 189 ms | 245 ms | 0% | 0 | 6 | 12 s / 24 s | sim |
-| hot (1 wallet) | 126 | 250 ms | 329 ms | 390 ms | 0% | 0 | 29 | 16 s / 29 s | sim |
+| distributed | 100 req/s | 102 | 6 ms | 9 ms | 13 ms | 0% | 0 | 0,28 s / 0,55 s | sim |
+| distributed | 200 req/s | 202 | 7 ms | 12 ms | 18 ms | 0% | 0 | 0,35 s / 0,81 s | sim |
+| distributed | 300 req/s | 301 | 9–12 ms | 23–57 ms | 71–102 ms | 0% | 0 | 3–7 s / 8–12 s | sim |
+| distributed | sem limite | 506 | 58 ms | 124 ms | 161 ms | 0% | 0 | 18 s / 41 s | sim |
+| hot | 100 req/s | 102 | 6 ms | 9 ms | 14 ms | 0% | 0 | 0,28 s / 0,56 s | sim |
+| hot | sem limite | 196 | 166 ms | 207 ms | 220 ms | 0% | 0 | 0,43 s / 1,0 s | sim |
 
 **Análise**
 
-- **Correção sob carga:** zero erros, zero 5xx, zero retries e **todas as wallets consistentes** na reconciliação nos dois cenários.
-- **Throughput limitado por CPU das instâncias:** no distributed, cada processo Bun ficou em ~100% de CPU (event loop single-thread) com ~110–130 req/s, o que dá cerca de 7–8ms de CPU por requisição, incluindo validação, ORM, log JSON por requisição e os workers no mesmo loop. O Postgres usou ~2 cores. Escalar é adicionar instâncias: não há lock global, e wallets diferentes não disputam nada (só 6 transações esperando lock no pico, de wallets sorteadas iguais).
-- **Hot wallet é serial por desenho:** o row lock enfileira as 32 transações (até 29 esperando ao mesmo tempo) e a latência é ≈ fila × duração da transação (p50 250ms). Não houve `LOCK_TIMEOUT` nem conflito de versão: com `FOR UPDATE` cada requisição faz uma única tentativa. É o trade-off escolhido em §6, e o teto (~130 req/s numa wallet) fica muito acima do ritmo de apostas de um jogador.
-- **Outbox lag é o ponto fraco medido.** Cada aposta gera 2 eventos (~700 eventos/s no distributed), e o publisher não acompanhou o pico sustentado: o lag cresceu durante a janela e a fila drenou em ~25s depois da carga. Investigação, passo a passo:
-  1. A primeira versão esperava o próximo ciclo (500ms) a cada lote de 50, um teto de ~300 eventos/s com 3 instâncias. Corrigido: o publisher drena lotes cheios no mesmo ciclo.
-  2. Medido isolado, o publisher fazia 672 eventos/s (5 lotes SQS sequenciais por ciclo). Com **faixas paralelas por partição** (a ordem por wallet se mantém), lote de 100 e um **índice parcial `(seq) WHERE published_at IS NULL`** (migration 0006; antes, o claim percorria todo o histórico já publicado), chegou a **1.159 eventos/s** por instância.
-  3. Sob carga, o lag continuou alto porque (a) o publisher divide o event loop já saturado pelo HTTP e (b) **o MiniStack (Python, single-thread) chegou a 100% de CPU**, e nele o `SendMessageBatch` fica mais lento quanto maior a fila (medido: 4,6ms por lote com a fila vazia, 61ms com 30 mil mensagens).
-  4. No hot, todos os eventos são de **um único grupo FIFO** (a wallet). Envio e consumo desse grupo são seriais — o que também vale no SQS real, onde o throughput é limitado por `MessageGroupId`.
-- **O que faria em produção:** separar o papel `outbox` em instâncias dedicadas (`ROLES` já permite), usar SQS real (sem o teto do emulador) com *high throughput FIFO* e acompanhar `outbox_lag_seconds` com alerta. Se a ordem estrita por wallet não for necessária para os consumidores, publicar em fila standard elimina o limite por grupo. A garantia não muda: o evento confirmado nunca se perde e só atrasa.
+- **Correção sob carga:** zero erros, zero 5xx, zero retries e **todas as wallets consistentes** na reconciliação em todas as execuções.
+- **Throughput limitado por CPU das instâncias:** sem limite, o distributed chega a ~500 req/s com as 3 instâncias Bun perto de 100% de CPU (event loop single-thread); o Postgres usa ~2 cores. Escalar é adicionar instâncias: não há lock global, e wallets diferentes não disputam nada.
+- **Hot wallet é serial por desenho:** o row lock enfileira as transações (até 29 esperando ao mesmo tempo) e a latência é ≈ fila × duração da transação (p50 166ms com 32 usuários). Não houve `LOCK_TIMEOUT` nem conflito de versão: com `FOR UPDATE` cada requisição faz uma única tentativa. É o trade-off escolhido em §6, e o teto (~200 req/s numa wallet) fica muito acima do ritmo de apostas de um jogador.
+- **Outbox lag: até ~400 eventos/s fica abaixo de 1s** (cada aposta gera 2 eventos). O piso de ~0,3s vem do ciclo do publisher (`OUTBOX_TICK_MS` 500). Acima de ~600 eventos/s o lag cresce durante a janela e a fila drena depois. Investigação:
+  1. A primeira versão esperava o próximo ciclo a cada lote. Corrigido: o publisher drena lotes cheios no mesmo ciclo, envia partições em faixas paralelas (a ordem por wallet se mantém), usa lote de 100 e um **índice parcial `(seq) WHERE published_at IS NULL`** (migration 0006; antes, o claim percorria todo o histórico já publicado). Medido isolado: 672 → 1.159 eventos/s por instância.
+  2. **O limite restante é o emulador.** No MiniStack, cada entrada enviada a uma fila FIFO reconstrói o cache de deduplicação inteiro (janela de 5 min; [`_prune_dedup`](https://github.com/ministackorg/ministack/blob/v1.5.30/ministack/services/sqs.py#L1403-L1408), chamado a cada envio), então o envio custa O(mensagens enviadas nos últimos 5 min), independentemente de a fila estar vazia: medido com a fila esvaziada a cada rodada, 2,7ms por lote de 10 após 500 envios e 17ms após 12 mil; numa fila standard, ~1ms constante. Com o processo Python single-thread do MiniStack a 100% de CPU, nenhuma mudança no publisher ajuda. A 300 req/s, **uma instância dedicada ao papel `outbox`** (`LOAD_OUTBOX_INSTANCES=1`) deu o mesmo lag (p99 9s contra 8–12s), com o MiniStack saturado nas duas configurações. A comparação com o LocalStack (§21.1) confirma.
+  3. Uma versão anterior do teste rodava o hot depois do distributed na mesma fila, herdando esse cache: o lag do hot parecia 29s e foi atribuído ao grupo FIFO único. Com filas novas por cenário, o hot fica em ~1s no p99 no seu throughput máximo: o grupo único não é o gargalo nessa taxa.
+- **O que faria em produção:** SQS real (sem o custo O(n) do emulador) com *high throughput FIFO*, alerta em `outbox_lag_seconds` e, se o publisher passar a disputar CPU com o HTTP, instâncias dedicadas ao papel `outbox` (`ROLES` já permite). Se a ordem por wallet não for necessária para os consumidores, uma fila standard elimina o limite por `MessageGroupId`. A garantia não muda: o evento confirmado nunca se perde e só atrasa.
 
+### 21.1 Comparação com o LocalStack
+
+Para separar o publisher do emulador, a mesma carga rodou contra o **LocalStack 2026.10.1** (auth token pessoal do plano Hobby, container temporário, `SQS_ENDPOINT` apontando para ele; nada disso ficou no repositório):
+
+| | MiniStack 1.5.30 | LocalStack 2026.10.1 |
+|---|---|---|
+| `SendMessageBatch` FIFO (lote de 10) | 2,7 ms → 17 ms após 12 mil envios | ~2,5 ms, constante |
+| outbox lag p99, distributed a 300 req/s | 8–12 s | 0,79 s |
+| outbox lag p99, distributed sem limite | 41 s (506 req/s) | 1,39 s (384 req/s) |
+| outbox lag p99, hot sem limite | 1,0 s | 0,9 s |
+
+O lag alto do MiniStack é do emulador, não do publisher. O LocalStack usou mais CPU do host compartilhado, daí o throughput HTTP menor sem limite. Mesmo assim, ele **não foi adotado**: além do token, tem um bug de semântica FIFO que afeta o consumidor.
+
+**O bug.** No SQS, `ChangeMessageVisibility` vale a partir da chamada ([AWS: ChangeMessageVisibility](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_ChangeMessageVisibility.html)), e a lógica FIFO é por grupo: grupos diferentes são processados em paralelo, e uma mensagem em voo só segura o próprio grupo ([AWS: FIFO queue delivery logic](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues-understanding-logic.html)); o consumidor usa isso no backoff de retry transitório e para devolver a mensagem na hora no SIGTERM (§11). No LocalStack, a fila FIFO devolve as mensagens em voo percorrendo **todas** as mensagens em voo da fila em ordem de recebimento e para na primeira ainda invisível, **de qualquer grupo** ([`FifoQueue.requeue_inflight_messages`](https://github.com/localstack/localstack/blob/8b9a79f05846835cf4dff63ab7eefdde9df83783/localstack-core/localstack/services/sqs/models.py#L1166-L1184), último código público; o repositório foi arquivado em 2026-03-23):
+
+```python
+for standard_message in messages:
+    # in fifo, an invisible message blocks potentially visible messages afterwards
+    # this can happen for example if multiple message of the same group are received at once, ...
+    if not standard_message.is_visible:
+        return
+```
+
+O trecho veio do [PR #13386](https://github.com/localstack/localstack/pull/13386) (nov/2025), que corrigiu a [issue #12457](https://github.com/localstack/localstack/issues/12457): a mensagem com visibilidade estendida deve segurar as seguintes **do mesmo grupo**. O comentário e o PR descrevem esse bloqueio por grupo, mas `inflight` guarda as mensagens em voo da fila inteira, então o `return` bloqueia todos os grupos. Não há issue pública para esse efeito (o repositório foi arquivado antes); a evidência é o código acima e a reprodução abaixo. Efeito: o retry (ou a devolução no SIGTERM) de uma wallet espera a visibilidade de qualquer mensagem recebida antes, de outra wallet. Reprodução (A da wallet-a com visibilidade de 20s; B da wallet-b com 2s, como um backoff):
+
+```text
+MiniStack 1.5.30                                   LocalStack 2026.10.1
+t= 0.0s  A recebida; visibilidade 20s              t= 0.3s  A recebida; visibilidade 20s
+t= 0.0s  B recebida; visibilidade 2s               t= 0.3s  B recebida; visibilidade 2s
+t= 1.1s  receive -> vazio                          t= 1.3s  receive -> vazio
+t= 2.1s  receive -> B (receiveCount=2)             ...      (receive vazio a cada 1s)
+                                                   t=21.2s  receive -> A (receiveCount=2), B (receiveCount=2)
+```
+
+Log de debug do LocalStack (`LS_LOG=debug`): as duas visibilidades são aceitas às 12:25:19 e as duas mensagens só voltam juntas quando A expira, 21s depois:
+
+```text
+12:25:19.252  INFO  AWS sqs.ChangeMessageVisibility => 200
+12:25:19.260  INFO  AWS sqs.ChangeMessageVisibility => 200
+12:25:40.160  DEBUG re-queueing inflight messages SqsMessage(id=9eb20418-…,group=wallet-a) into queue …trace-….fifo
+12:25:40.160  DEBUG re-queueing inflight messages SqsMessage(id=3908eb39-…,group=wallet-b) into queue …trace-….fifo
+```
+
+Reproduzido também no 4.14.0, a última imagem sem token. A suíte inteira contra o LocalStack 2026.10.1 passou em 346 de 347 testes; a falha foi justamente `sqs-emulator.test.ts` › *ChangeMessageVisibility delays redelivery*. A correção não seria afetada (o retry só atrasa, e a contagem para a DLQ continua certa), mas o backoff deixaria de ser o configurado.
+
+**Fontes:** [AWS: ChangeMessageVisibility](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_ChangeMessageVisibility.html) · [AWS: FIFO queue delivery logic](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues-understanding-logic.html) · [LocalStack PR #13386](https://github.com/localstack/localstack/pull/13386) e [issue #12457](https://github.com/localstack/localstack/issues/12457) · [LocalStack — mudança para imagem única com auth token](https://blog.localstack.cloud/localstack-single-image-next-steps/) · [LocalStack 2026.03.0](https://blog.localstack.cloud/localstack-for-aws-release-2026-03-0/) · [preços e termos do plano Hobby](https://www.localstack.cloud/pricing) · [SQS no LocalStack (disponível a partir do Hobby)](https://docs.localstack.cloud/aws/services/sqs/) · [LocalStack — AWS deep dives: SQS](https://blog.localstack.cloud/aws-deep-dives-sqs/).
