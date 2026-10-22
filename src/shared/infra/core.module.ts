@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import type { Env } from '../../config/env';
 import { MikroOrmUnitOfWork } from './database/mikro-orm-unit-of-work';
 import { createOrm } from './database/orm';
+import { failpointsFrom } from './failpoints';
 import { PromMetrics } from './metrics';
 import { systemClock, uuidV7Generator } from './system';
 
@@ -14,6 +15,7 @@ export const UNIT_OF_WORK = Symbol('UNIT_OF_WORK');
 export const CLOCK = Symbol('CLOCK');
 export const ID_GENERATOR = Symbol('ID_GENERATOR');
 export const METRICS = Symbol('METRICS');
+export const FAILPOINTS = Symbol('FAILPOINTS');
 
 @Global()
 @Module({})
@@ -32,6 +34,7 @@ export class CoreModule implements OnApplicationShutdown {
       { provide: CLOCK, useValue: systemClock },
       { provide: ID_GENERATOR, useValue: uuidV7Generator },
       { provide: METRICS, useValue: new PromMetrics() },
+      { provide: FAILPOINTS, useValue: failpointsFrom(env.FAILPOINTS) },
     ];
     return { module: CoreModule, providers, exports: providers.map((p) => p.provide) };
   }
