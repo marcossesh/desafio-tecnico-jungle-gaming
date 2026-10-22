@@ -1,6 +1,7 @@
 import { Body, Controller, Get, HttpCode, Inject, Param, Post, Query } from '@nestjs/common';
 import { CorrelationId } from '../../shared/http/correlation-id';
 import { parseInput } from '../../shared/http/validation';
+import { addLogContext } from '../../shared/infra/log-context';
 import { Money } from '../../shared/money/money';
 import { OpenWallet } from '../application/open-wallet';
 import { ReconcileWallet } from '../application/reconcile-wallet';
@@ -25,6 +26,7 @@ export class WalletsController {
       initialBalance: Money.from(input.initialBalance),
       correlationId,
     });
+    addLogContext({ walletId: wallet.id });
     return presentWallet(wallet);
   }
 
@@ -43,6 +45,7 @@ export class WalletsController {
   @Post(':walletId/reconciliation')
   @HttpCode(200)
   async reconcile(@Param('walletId') walletId: string) {
+    addLogContext({ walletId });
     return presentReconciliation(await this.reconcileWallet.execute(parseInput(walletIdParam, walletId)));
   }
 }

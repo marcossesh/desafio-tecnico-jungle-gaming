@@ -3,6 +3,7 @@ import type { Response } from 'express';
 import { ApplicationError } from '../../shared/application/errors';
 import { CorrelationId } from '../../shared/http/correlation-id';
 import { parseInput } from '../../shared/http/validation';
+import { addLogContext } from '../../shared/infra/log-context';
 import { Money } from '../../shared/money/money';
 import { ProcessWagerTransaction } from '../application/process-wager-transaction';
 import { WagerQueries } from '../application/wager-queries';
@@ -32,12 +33,19 @@ export class WagerTransactionsController {
     }
     const key = parseInput(idempotencyKeyHeader, idempotencyKey);
     const input = parseInput(wagerBody, body);
+    addLogContext({ walletId: input.walletId, providerId: input.providerId, kind: input.kind });
     const outcome = await this.processWager.execute({ ...input, money: Money.from(input.money) }, key, {
       channel: 'http',
       correlationId,
     });
     if (outcome.type === 'duplicate_message') throw new Error('HTTP requests never go through the inbox');
 
+    addLogContext({
+      transactionId: outcome.transaction.id,
+      status: outcome.transaction.status,
+      failureCode: outcome.transaction.failureCode,
+      idempotentReplay: String(outcome.type === 'replay'),
+    });
     res.status(httpStatusOf(outcome.transaction));
     return presentResult(outcome.transaction, outcome.type === 'replay');
   }
