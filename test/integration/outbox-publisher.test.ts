@@ -19,6 +19,7 @@ import { PromMetrics } from '../../src/shared/infra/metrics';
 import { createSqsClient, ensureQueues, type QueueNames, type QueueUrls } from '../../src/shared/infra/sqs';
 import { systemClock } from '../../src/shared/infra/system';
 import { Money } from '../../src/shared/money/money';
+import { startTestApp } from '../support/app';
 import { FakeClock } from '../support/clock';
 import { createTestDatabase, type TestDatabase } from '../support/database';
 import { assertLedgerConsistent } from '../support/ledger';
@@ -242,5 +243,31 @@ describe('PublishOutbox', () => {
       await sql`SELECT count(*)::int AS n FROM outbox_messages WHERE published_at = to_timestamp(0)`;
     expect(row.n).toBe(0);
     await drainEvents();
+  });
+
+  test('the outbox role publishes in the background', async () => {
+    const api = await startTestApp(db.url, {
+      ROLES: 'api,outbox',
+      OUTBOX_TICK_MS: '50',
+      SQS_INPUT_QUEUE: names.input,
+      SQS_DLQ_QUEUE: names.dlq,
+      SQS_EVENTS_QUEUE: names.events,
+    });
+    try {
+      const res = await api.request('POST', '/wallets', {
+        playerId: Bun.randomUUIDv7(),
+        initialBalance: { amount: '10.00', currency: 'BRL' },
+      });
+      let pending = 1;
+      for (let i = 0; i < 40 && pending > 0; i++) {
+        await Bun.sleep(50);
+        pending = await unpublishedCount();
+      }
+      expect(pending).toBe(0);
+      const events = await drainEvents();
+      expect(events.map((m) => m.Attributes?.MessageGroupId)).toEqual([res.body.id]);
+    } finally {
+      await api.close();
+    }
   });
 });
