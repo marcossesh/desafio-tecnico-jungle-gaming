@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!**/node_modules", "!**/.claude", "!**/.context", "!**/docs"]
+    "includes": ["**", "!**/node_modules", "!**/.claude", "!**/.context", "!**/docs", "!**/*.md"]
   },
   "formatter": {
     "indentStyle": "space",
