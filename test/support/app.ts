@@ -25,7 +25,11 @@ export interface TestApp {
 }
 
 /** Só o papel `api` por padrão: workers em background interfeririam nas asserções; testes os ligam via `env`. */
-export async function startTestApp(databaseUrl: string, env: Record<string, string> = {}): Promise<TestApp> {
+export async function startTestApp(
+  databaseUrl: string,
+  env: Record<string, string> = {},
+  options: { logs?: string[] } = {},
+): Promise<TestApp> {
   const config = loadEnv({
     ...process.env,
     DATABASE_URL: databaseUrl,
@@ -34,7 +38,11 @@ export async function startTestApp(databaseUrl: string, env: Record<string, stri
     ROLES: 'api',
     ...env,
   });
-  const app = await createApp(config, createLogger(process.env.TEST_LOG_LEVEL ?? 'silent'));
+  const { logs } = options;
+  const logger = logs
+    ? createLogger('info', { write: (line: string) => void logs.push(line) })
+    : createLogger(process.env.TEST_LOG_LEVEL ?? 'silent');
+  const app = await createApp(config, logger);
   await app.listen(0, '127.0.0.1');
   const baseUrl = await app.getUrl();
 
