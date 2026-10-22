@@ -63,8 +63,8 @@ export async function startTestApp(
 }
 
 /** N instâncias da app no mesmo banco, cada uma com seu pool; requisições distribuídas em round-robin. */
-export async function startTestCluster(databaseUrl: string, size = 3) {
-  const apps = await Promise.all(Array.from({ length: size }, () => startTestApp(databaseUrl)));
+export async function startTestCluster(databaseUrl: string, size = 3, env: Record<string, string> = {}) {
+  const apps = await Promise.all(Array.from({ length: size }, () => startTestApp(databaseUrl, env)));
   let next = 0;
   return {
     apps,
