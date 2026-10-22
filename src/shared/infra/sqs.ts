@@ -1,4 +1,9 @@
-import { CreateQueueCommand, GetQueueAttributesCommand, SQSClient } from '@aws-sdk/client-sqs';
+import {
+  CreateQueueCommand,
+  GetQueueAttributesCommand,
+  GetQueueUrlCommand,
+  SQSClient,
+} from '@aws-sdk/client-sqs';
 
 export function createSqsClient(opts: { endpoint: string; region: string }): SQSClient {
   // Sem credenciais no ambiente o SDK tenta o IMDS da EC2 e trava; o emulador aceita qualquer par.
@@ -60,4 +65,13 @@ async function queueArn(sqs: SQSClient, url: string): Promise<string> {
   const arn = res.Attributes?.QueueArn;
   if (!arn) throw new Error(`QueueArn not found for ${url}`);
   return arn;
+}
+
+export async function resolveQueueUrls(sqs: SQSClient, names: QueueNames): Promise<QueueUrls> {
+  const url = async (QueueName: string) => {
+    const res = await sqs.send(new GetQueueUrlCommand({ QueueName }));
+    if (!res.QueueUrl) throw new Error(`Queue ${QueueName} not found`);
+    return res.QueueUrl;
+  };
+  return { input: await url(names.input), dlq: await url(names.dlq), events: await url(names.events) };
 }
