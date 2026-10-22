@@ -1,0 +1,52 @@
+import type { INestApplication } from '@nestjs/common';
+import { createApp } from '../../src/app';
+import { loadEnv } from '../../src/config/env';
+import { METRICS } from '../../src/shared/infra/core.module';
+import { createLogger } from '../../src/shared/infra/logger';
+import type { PromMetrics } from '../../src/shared/infra/metrics';
+
+export interface ApiResponse {
+  status: number;
+  headers: Headers;
+  // biome-ignore lint/suspicious/noExplicitAny: corpo JSON arbitrário inspecionado pelos testes
+  body: any;
+}
+
+export interface TestApp {
+  app: INestApplication;
+  metrics: PromMetrics;
+  request(
+    method: string,
+    path: string,
+    body?: unknown,
+    headers?: Record<string, string>,
+  ): Promise<ApiResponse>;
+  close(): Promise<void>;
+}
+
+export async function startTestApp(databaseUrl: string): Promise<TestApp> {
+  const env = loadEnv({
+    ...process.env,
+    DATABASE_URL: databaseUrl,
+    SQS_ENDPOINT: process.env.SQS_ENDPOINT ?? 'http://localhost:4566',
+    DB_POOL_MAX: '5',
+  });
+  const app = await createApp(env, createLogger(process.env.TEST_LOG_LEVEL ?? 'silent'));
+  await app.listen(0, '127.0.0.1');
+  const baseUrl = await app.getUrl();
+
+  return {
+    app,
+    metrics: app.get<PromMetrics>(METRICS),
+    async request(method, path, body, headers = {}) {
+      const res = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { 'content-type': 'application/json', ...headers },
+        ...(body !== undefined && { body: typeof body === 'string' ? body : JSON.stringify(body) }),
+      });
+      const text = await res.text();
+      return { status: res.status, headers: res.headers, body: text ? JSON.parse(text) : undefined };
+    },
+    close: () => app.close(),
+  };
+}
