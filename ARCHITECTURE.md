@@ -195,7 +195,7 @@ As garantias de unicidade, imutabilidade e não-negatividade valem no banco, ind
 ### Transactional outbox (papel `outbox`)
 
 - O evento é gravado na mesma transação da mudança financeira: nunca é publicado antes do commit e nunca se perde depois dele.
-- **Lease em vez de transação aberta:** o publisher reserva até 50 eventos com lease (`locked_until`, `OUTBOX_LEASE_MS`) numa transação curta e publica fora dela, em `SendMessageBatch` de 10 (`MessageGroupId = walletId`, `MessageDeduplicationId = eventId`). Nenhuma conexão ou lock fica preso durante I/O de rede. Depois de um crash, outra instância assume quando o lease expira.
+- **Lease em vez de transação aberta:** o publisher reserva até 100 eventos com lease (`locked_until`, `OUTBOX_LEASE_MS`) numa transação curta (índice parcial em `seq` dos não publicados) e publica fora dela, em `SendMessageBatch` de 10 (`MessageGroupId = walletId`, `MessageDeduplicationId = eventId`), com partições distribuídas em 5 faixas paralelas que preservam a ordem por wallet. Enquanto os lotes vêm cheios, drena no mesmo ciclo. Nenhuma conexão ou lock fica preso durante I/O de rede. Depois de um crash, outra instância assume quando o lease expira.
 - **Sucesso e falha:** em caso de sucesso, `published_at` (a marcação é idempotente e não sobrescreve o que outra instância já publicou). Em caso de falha (do lote ou de entradas individuais), backoff de 1s até 5 min, **sem limite de tentativas** — evento confirmado nunca é descartado.
 - Duplicatas são esperadas e seguras: os consumidores deduplicam por `eventId` (a dedup do FIFO é uma janela de 5 min).
 - O cliente SQS tem `connectionTimeout` 3s e `requestTimeout` 30s com `throwOnRequestTimeout` (sem isso, o SDK só emite um aviso e a chamada fica presa). Testado com o MiniStack **pausado**.
@@ -387,9 +387,34 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 - **Sem tombstone:** um `ROLLBACK` que expira (`REFERENCE_NOT_FOUND`) antes de a `BET` chegar não impede a BET tardia de ser processada.
 - **Ordem de eventos não é estrita** entre retries e falhas parciais de lote; os consumidores devem usar `eventId` (dedup) e `walletVersion` (ordem).
 - **Takeover lento:** o outbox, depois de um crash, espera o lease (30s); o worker de referências também (30s).
+- **Outbox lag sob pico sustentado:** no ambiente local, o publisher não acompanhou ~700 eventos/s (§21); o evento só atrasa, nunca se perde.
 - **Sem retenção de outbox e inbox:** as tabelas crescem linearmente (índices parciais mantêm o claim barato). Um `DELETE` periódico dos publicados há mais de N dias resolveria.
 - **Ledger simples:** sem double-entry com contas de contrapartida (house/provider).
 - **Erros de trigger com saldo:** as mensagens de erro dos triggers de integridade incluem o saldo; só aparecem em violação de invariante (bug, 500) e então podem chegar ao log.
 - **Métricas por réplica:** atrás do nginx, cada scrape cai numa réplica; em produção, o Prometheus descobriria e rasparia cada instância.
 - **Sem Postgres no boot, a instância não sobe** (o ORM conecta na inicialização); o compose ordena os serviços por healthcheck. Uma indisponibilidade depois do boot vira `503` e retry.
 - **Autenticação** não implementada (§16).
+
+## 21. Teste de carga
+
+`bun run test:load` (`test/load/run.ts`) sobe **3 instâncias reais** (todos os papéis, pool 10, `lock_timeout` 3s) num banco e em filas dedicados, gera carga em loop fechado direto nas instâncias (para raspar o `/metrics` de cada uma), simula um consumidor downstream da fila de eventos e grava o relatório em `test/load/results/` (`.md` + `.json`, fora do git). Cenários: **distributed** (100 wallets) e **hot** (1 wallet); BET de 1.00. Parâmetros: `LOAD_CONCURRENCY`, `LOAD_DURATION_S`, `LOAD_WARMUP_S`, `LOAD_WALLETS`, `LOAD_INSTANCES`, `LOAD_SCENARIOS`. No fim, todas as wallets passam pela reconciliação.
+
+**Ambiente:** notebook i5-12450H (12 threads), 18 GB, Linux 7.0, Bun 1.4.3, PostgreSQL 18.6 e MiniStack em Docker, com gerador e instâncias no mesmo host (que também rodava o desktop). 32 usuários virtuais, 20s medidos após 3s de aquecimento. Os números variaram cerca de ±10% entre execuções; abaixo, a última.
+
+| Cenário | req/s | p50 | p95 | p99 | Erros | Conflitos de lock | Máx. esperando lock | Outbox lag p50 / p99 | Consistente |
+|---|---|---|---|---|---|---|---|---|---|
+| distributed (100 wallets) | 338 | 84 ms | 189 ms | 245 ms | 0% | 0 | 6 | 12 s / 24 s | sim |
+| hot (1 wallet) | 126 | 250 ms | 329 ms | 390 ms | 0% | 0 | 29 | 16 s / 29 s | sim |
+
+**Análise**
+
+- **Correção sob carga:** zero erros, zero 5xx, zero retries e **todas as wallets consistentes** na reconciliação nos dois cenários.
+- **Throughput limitado por CPU das instâncias:** no distributed, cada processo Bun ficou em ~100% de CPU (event loop single-thread) com ~110–130 req/s, o que dá cerca de 7–8ms de CPU por requisição, incluindo validação, ORM, log JSON por requisição e os workers no mesmo loop. O Postgres usou ~2 cores. Escalar é adicionar instâncias: não há lock global, e wallets diferentes não disputam nada (só 6 transações esperando lock no pico, de wallets sorteadas iguais).
+- **Hot wallet é serial por desenho:** o row lock enfileira as 32 transações (até 29 esperando ao mesmo tempo) e a latência é ≈ fila × duração da transação (p50 250ms). Não houve `LOCK_TIMEOUT` nem conflito de versão: com `FOR UPDATE` cada requisição faz uma única tentativa. É o trade-off escolhido em §6, e o teto (~130 req/s numa wallet) fica muito acima do ritmo de apostas de um jogador.
+- **Outbox lag é o ponto fraco medido.** Cada aposta gera 2 eventos (~700 eventos/s no distributed), e o publisher não acompanhou o pico sustentado: o lag cresceu durante a janela e a fila drenou em ~25s depois da carga. Investigação, passo a passo:
+  1. A primeira versão esperava o próximo ciclo (500ms) a cada lote de 50, um teto de ~300 eventos/s com 3 instâncias. Corrigido: o publisher drena lotes cheios no mesmo ciclo.
+  2. Medido isolado, o publisher fazia 672 eventos/s (5 lotes SQS sequenciais por ciclo). Com **faixas paralelas por partição** (a ordem por wallet se mantém), lote de 100 e um **índice parcial `(seq) WHERE published_at IS NULL`** (migration 0006; antes, o claim percorria todo o histórico já publicado), chegou a **1.159 eventos/s** por instância.
+  3. Sob carga, o lag continuou alto porque (a) o publisher divide o event loop já saturado pelo HTTP e (b) **o MiniStack (Python, single-thread) chegou a 100% de CPU**, e nele o `SendMessageBatch` fica mais lento quanto maior a fila (medido: 4,6ms por lote com a fila vazia, 61ms com 30 mil mensagens).
+  4. No hot, todos os eventos são de **um único grupo FIFO** (a wallet). Envio e consumo desse grupo são seriais — o que também vale no SQS real, onde o throughput é limitado por `MessageGroupId`.
+- **O que faria em produção:** separar o papel `outbox` em instâncias dedicadas (`ROLES` já permite), usar SQS real (sem o teto do emulador) com *high throughput FIFO* e acompanhar `outbox_lag_seconds` com alerta. Se a ordem estrita por wallet não for necessária para os consumidores, publicar em fila standard elimina o limite por grupo. A garantia não muda: o evento confirmado nunca se perde e só atrasa.
+
