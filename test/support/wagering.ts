@@ -1,22 +1,31 @@
 import type { MikroORM } from '@mikro-orm/postgresql';
 import type { FailpointName } from '../../src/shared/application/failpoints';
+import type { Clock } from '../../src/shared/domain/ports';
 import { MikroOrmUnitOfWork } from '../../src/shared/infra/database/mikro-orm-unit-of-work';
 import { createOrm } from '../../src/shared/infra/database/orm';
 import { failpointsFrom } from '../../src/shared/infra/failpoints';
+import { createLogger } from '../../src/shared/infra/logger';
 import { systemClock, uuidV7Generator } from '../../src/shared/infra/system';
 import { Money } from '../../src/shared/money/money';
 import {
   ProcessWagerTransaction,
   type WagerCommand,
 } from '../../src/wagering/application/process-wager-transaction';
+import { ReprocessPendingReferences } from '../../src/wagering/application/reprocess-pending-references';
 import { OpenWallet } from '../../src/wallet/application/open-wallet';
 import type { Wallet } from '../../src/wallet/domain/wallet';
+
+export const REFERENCE_BACKOFF = { baseMs: 2_000, capMs: 300_000 };
 
 /** Casos de uso montados direto sobre um banco de teste, sem HTTP. */
 export interface UseCases {
   orm: MikroORM;
   openWallet(amount: string): Promise<Wallet>;
   processWager(failpoints?: FailpointName[]): ProcessWagerTransaction;
+  reprocess(
+    clock: Clock,
+    options?: { maxReferenceAttempts?: number; failpoints?: FailpointName[] },
+  ): ReprocessPendingReferences;
   close(): Promise<void>;
 }
 
@@ -34,10 +43,25 @@ export async function createUseCases(databaseUrl: string): Promise<UseCases> {
     processWager: (failpoints = []) =>
       new ProcessWagerTransaction(uow, uuidV7Generator, systemClock, failpointsFrom(failpoints.join(',')), {
         lockTimeoutMs: 3_000,
-        pendingReferenceBaseMs: 2_000,
+        pendingReferenceBaseMs: REFERENCE_BACKOFF.baseMs,
         maxReferenceAttempts: 10,
         maxAttempts: 3,
       }),
+    reprocess: (clock, options = {}) =>
+      new ReprocessPendingReferences(
+        uow,
+        uuidV7Generator,
+        clock,
+        failpointsFrom((options.failpoints ?? []).join(',')),
+        createLogger('silent'),
+        {
+          batchSize: 20,
+          claimLeaseMs: 30_000,
+          backoff: REFERENCE_BACKOFF,
+          maxReferenceAttempts: options.maxReferenceAttempts ?? 10,
+          lockTimeoutMs: 3_000,
+        },
+      ),
     close: () => orm.close(),
   };
 }
