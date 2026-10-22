@@ -16,6 +16,7 @@ import { createSqsClient, ensureQueues, type QueueNames, type QueueUrls } from '
 import type { ProcessWagerTransaction } from '../../src/wagering/application/process-wager-transaction';
 import { SqsConsumer } from '../../src/wagering/infra/sqs-consumer';
 import type { Wallet } from '../../src/wallet/domain/wallet';
+import { startTestApp } from '../support/app';
 import { createTestDatabase, type TestDatabase } from '../support/database';
 import { assertLedgerConsistent } from '../support/ledger';
 import { createUseCases, type UseCases } from '../support/wagering';
@@ -351,5 +352,27 @@ describe('SqsConsumer', () => {
 
     await drain(consumer());
     expect(await walletState(wallet)).toEqual({ balance: '80.00', version: 3 });
+  });
+
+  test('the consumer role wires the queues by name and shuts down without waiting for the long poll', async () => {
+    const api = await startTestApp(db.url, {
+      ROLES: 'api,consumer',
+      SQS_INPUT_QUEUE: names.input,
+      SQS_DLQ_QUEUE: names.dlq,
+      SQS_EVENTS_QUEUE: names.events,
+    });
+    const wallet = await useCases.openWallet('100.00');
+    await send(envelope(wallet), wallet.id);
+
+    let balance = '100.00';
+    for (let i = 0; i < 50 && balance === '100.00'; i++) {
+      await Bun.sleep(100);
+      balance = (await api.request('GET', `/wallets/${wallet.id}`)).body.balance.amount;
+    }
+    expect(balance).toBe('90.00');
+
+    const startedAt = performance.now();
+    await api.close();
+    expect(performance.now() - startedAt).toBeLessThan(3_000);
   });
 });

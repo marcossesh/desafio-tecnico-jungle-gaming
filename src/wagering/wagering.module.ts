@@ -10,6 +10,7 @@ import { ReprocessPendingReferences } from './application/reprocess-pending-refe
 import { WagerQueries } from './application/wager-queries';
 import { WagerTransactionsController } from './http/wager-transactions.controller';
 import { PendingReferenceScheduler } from './infra/pending-reference.scheduler';
+import { SqsConsumerHost } from './infra/sqs-consumer.host';
 
 @Module({
   controllers: [WagerTransactionsController],
@@ -45,6 +46,7 @@ import { PendingReferenceScheduler } from './infra/pending-reference.scheduler';
         }),
     },
     PendingReferenceScheduler,
+    SqsConsumerHost,
     { provide: WagerQueries, inject: [UNIT_OF_WORK], useFactory: (uow: UnitOfWork) => new WagerQueries(uow) },
   ],
 })
