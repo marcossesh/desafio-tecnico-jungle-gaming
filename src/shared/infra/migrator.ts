@@ -1,6 +1,4 @@
-import { Migrator } from '@mikro-orm/migrations';
-import { MikroORM } from '@mikro-orm/postgresql';
-import { migrationsList } from '../../../migrations';
+import { createOrm } from './database/orm';
 
 export type MigrationDirection = 'up' | 'down';
 
@@ -9,13 +7,7 @@ export async function runMigrations(
   direction: MigrationDirection,
   options: { to?: number | string } = {},
 ): Promise<string[]> {
-  const orm = await MikroORM.init({
-    clientUrl,
-    entities: [],
-    discovery: { warnWhenNoEntities: false },
-    extensions: [Migrator],
-    migrations: { migrationsList, snapshot: false, silent: true },
-  });
+  const orm = await createOrm({ clientUrl, poolMax: 1 });
   try {
     const target = options.to === undefined ? undefined : { to: options.to };
     const done = direction === 'up' ? await orm.migrator.up(target) : await orm.migrator.down(target);
