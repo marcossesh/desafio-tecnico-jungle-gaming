@@ -252,6 +252,7 @@ O resultado de uma transação (200/202/422) é `{ transactionId, status, failur
 | `WALLET_NOT_FOUND` | wallet do payload inexistente (POST de transação) | 422 | não | corrigir |
 | `INSUFFICIENT_FUNDS` | BET sem saldo | 422 | **sim** | desistir |
 | `INSUFFICIENT_FUNDS_FOR_REVERSAL` | reversão que deixaria saldo negativo | 422 | **sim** | escalar para operação |
+| `BALANCE_LIMIT_EXCEEDED` | crédito que passaria do teto de `numeric(20,2)` (§19) | 422 | **sim** | escalar para operação |
 | `CURRENCY_MISMATCH` / `WALLET_PLAYER_MISMATCH` | moeda ou dono divergente | 422 | **sim** | corrigir com nova key |
 | `REFERENCE_MISMATCH` / `REFERENCE_KIND_NOT_ALLOWED` / `REFERENCE_AMOUNT_MISMATCH` | §5 | 422 | **sim** | corrigir |
 | `REFERENCE_NOT_PROCESSED` / `REFERENCE_ALREADY_REVERSED` | §5 | 422 | **sim** | desistir |
@@ -380,6 +381,7 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 6. `CURRENCY_MISMATCH` e `WALLET_PLAYER_MISMATCH` **são** persistidos como `REJECTED` (auditáveis); por isso `wager_transactions` não tem FK de moeda. `result_currency` guarda a moeda da wallet em que o saldo foi observado.
 7. O replay de uma transação que estava `PENDING_REFERENCE` e depois foi resolvida devolve o estado **atual** da linha (a resposta é reconstruída do que está persistido).
 8. Eventos de `FAILED` não são publicados: não é rejeição de negócio, e sim um item para a operação (auditável na consulta).
+9. Um crédito que levaria o saldo além de 999999999999999999.99 (teto de `numeric(20,2)`) é `REJECTED BALANCE_LIMIT_EXCEEDED` (422, persistido), não `400 INVALID_MONEY`: o payload é válido, quem decide é o estado da wallet.
 
 ## 20. Limitações e trade-offs conhecidos
 
