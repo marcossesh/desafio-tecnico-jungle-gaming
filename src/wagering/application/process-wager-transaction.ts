@@ -6,6 +6,7 @@ import {
   UniqueConstraintError,
 } from '../../shared/application/errors';
 import type { Failpoints } from '../../shared/application/failpoints';
+import type { Metrics, ProcessingOutcome } from '../../shared/application/metrics';
 import type { TransactionScope, UnitOfWork } from '../../shared/application/unit-of-work';
 import { addMs } from '../../shared/domain/backoff';
 import type { Clock, IdGenerator } from '../../shared/domain/ports';
@@ -67,6 +68,7 @@ export class InboxPayloadMismatchError extends ApplicationError {
 
 // Corrida entre requisições iguais: a próxima tentativa encontra a linha vencedora (replay ou conflito).
 const IDENTITY_CONSTRAINTS = new Set(['wager_tx_idempotency_key_unique', 'wager_tx_external_id_unique']);
+const IDEMPOTENCY_CONFLICTS = new Set(['IDEMPOTENCY_KEY_REUSED', 'EXTERNAL_TRANSACTION_ID_REUSED']);
 
 const RETRY_BASE_MS = 20;
 
@@ -76,6 +78,7 @@ export class ProcessWagerTransaction {
     private readonly ids: IdGenerator,
     private readonly clock: Clock,
     private readonly failpoints: Failpoints,
+    private readonly metrics: Metrics,
     private readonly settings: ProcessWagerSettings,
   ) {}
 
@@ -92,15 +95,56 @@ export class ProcessWagerTransaction {
         correlationId: ctx.correlationId,
         createdAt: this.clock.now(),
       });
-    build(); // payload inválido falha antes de abrir transação
+    const { kind } = build(); // payload inválido falha antes de abrir transação
+    const startedAt = performance.now();
+    const observe = (outcome: ProcessingOutcome) =>
+      this.metrics.wagerProcessingDuration(
+        { kind, channel: ctx.channel, outcome },
+        (performance.now() - startedAt) / 1_000,
+      );
 
+    try {
+      const outcome = await this.withRetries(() =>
+        this.uow.run((scope) => this.attempt(scope, build(), ctx), {
+          lockTimeoutMs: this.settings.lockTimeoutMs,
+        }),
+      );
+      switch (outcome.type) {
+        case 'new':
+          this.metrics.wagerTransaction({ kind, status: outcome.transaction.status, channel: ctx.channel });
+          observe('new');
+          break;
+        case 'replay':
+          this.metrics.idempotentReplay(ctx.channel);
+          observe('replay');
+          break;
+        case 'duplicate_message':
+          this.metrics.inboxDuplicate(ctx.inbox?.consumerName ?? 'unknown');
+          observe('duplicate');
+          break;
+      }
+      return outcome;
+    } catch (error) {
+      if (error instanceof ConflictError && IDEMPOTENCY_CONFLICTS.has(error.code)) {
+        this.metrics.idempotencyConflict(error.code);
+      }
+      observe('error');
+      throw error;
+    }
+  }
+
+  private async withRetries<T>(run: () => Promise<T>): Promise<T> {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.uow.run((scope) => this.attempt(scope, build(), ctx), {
-          lockTimeoutMs: this.settings.lockTimeoutMs,
-        });
+        return await run();
       } catch (error) {
+        if (error instanceof TransientError && error.code === 'LOCK_TIMEOUT')
+          this.metrics.lockConflict(error.reason);
         if (attempt >= this.settings.maxAttempts || !isRetryable(error)) throw error;
+        this.metrics.processingRetry(
+          'process_wager',
+          error instanceof TransientError ? error.reason : 'identity_race',
+        );
         await Bun.sleep(RETRY_BASE_MS * attempt + Math.random() * RETRY_BASE_MS);
       }
     }

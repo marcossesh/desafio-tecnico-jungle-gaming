@@ -70,6 +70,10 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
     return rows.map((row) => ({ id: row.id, walletId: row.wallet_id }));
   }
 
+  countPendingReferences(): Promise<number> {
+    return this.em.count(WagerTransactionSchema, { status: WagerTransactionStatus.PendingReference });
+  }
+
   wakeDependents(
     walletId: string,
     providerId: string,

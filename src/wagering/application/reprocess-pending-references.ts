@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import { TransientError } from '../../shared/application/errors';
 import type { Failpoints } from '../../shared/application/failpoints';
+import type { Metrics } from '../../shared/application/metrics';
 import type { UnitOfWork } from '../../shared/application/unit-of-work';
 import { addMs, type BackoffPolicy, exponentialBackoffMs } from '../../shared/domain/backoff';
 import type { Clock, IdGenerator } from '../../shared/domain/ports';
@@ -34,6 +35,7 @@ export class ReprocessPendingReferences {
     private readonly ids: IdGenerator,
     private readonly clock: Clock,
     private readonly failpoints: Failpoints,
+    private readonly metrics: Metrics,
     private readonly logger: Logger,
     private readonly settings: ReprocessSettings,
   ) {}
@@ -60,28 +62,54 @@ export class ReprocessPendingReferences {
 
     for (const item of claimed) {
       try {
-        report[await this.process(item)] += 1;
+        const { result, kind } = await this.process(item);
+        report[result] += 1;
+        if (result === 'processed' || result === 'rejected') {
+          const status =
+            result === 'processed' ? WagerTransactionStatus.Processed : WagerTransactionStatus.Rejected;
+          this.metrics.wagerTransaction({ kind, status, channel: 'worker' });
+        } else if (result === 'stillPending') {
+          this.metrics.processingRetry('pending_reference', 'reference_missing');
+        }
       } catch (error) {
         report.errors += 1;
         // transitório não gasta tentativa: o lease já reagendou o item
-        if (error instanceof TransientError) continue;
+        if (error instanceof TransientError) {
+          this.metrics.processingRetry('pending_reference', error.reason);
+          if (error.code === 'LOCK_TIMEOUT') this.metrics.lockConflict(error.reason);
+          continue;
+        }
         this.logger.error(
           { err: error, transactionId: item.id, walletId: item.walletId },
           'pending reference failed',
         );
-        if (await this.recordError(item)) report.failed += 1;
+        this.metrics.processingRetry('pending_reference', 'unexpected_error');
+        const failedKind = await this.recordError(item);
+        if (failedKind) {
+          report.failed += 1;
+          this.metrics.wagerTransaction({
+            kind: failedKind,
+            status: WagerTransactionStatus.Failed,
+            channel: 'worker',
+          });
+        }
       }
     }
+    this.metrics.pendingReferences(
+      await this.uow.run(({ transactions }) => transactions.countPendingReferences()),
+    );
     return report;
   }
 
-  private process(item: ClaimedTransaction): Promise<ItemResult> {
+  private process(item: ClaimedTransaction): Promise<{ result: ItemResult; kind: string }> {
     return this.uow.run(
       async (scope) => {
         const at = this.clock.now();
         const wallet = await scope.wallets.lockById(item.walletId);
         const tx = await scope.transactions.lockById(item.id);
-        if (!wallet || !tx || tx.status !== WagerTransactionStatus.PendingReference) return 'skipped';
+        if (!wallet || !tx || tx.status !== WagerTransactionStatus.PendingReference) {
+          return { result: 'skipped', kind: tx?.kind ?? 'unknown' };
+        }
 
         const reference = tx.referenceExternalTransactionId
           ? await scope.transactions.findByExternalId(tx.providerId, tx.referenceExternalTransactionId)
@@ -113,25 +141,23 @@ export class ReprocessPendingReferences {
         });
         this.failpoints.hit('reprocess.beforeCommit');
 
-        switch (outcome.status) {
-          case WagerTransactionStatus.Processed:
-            return 'processed';
-          case WagerTransactionStatus.Rejected:
-            return 'rejected';
-          case WagerTransactionStatus.PendingReference:
-            return 'stillPending';
-        }
+        const results: Record<typeof outcome.status, ItemResult> = {
+          [WagerTransactionStatus.Processed]: 'processed',
+          [WagerTransactionStatus.Rejected]: 'rejected',
+          [WagerTransactionStatus.PendingReference]: 'stillPending',
+        };
+        return { result: results[outcome.status], kind: tx.kind };
       },
       { lockTimeoutMs: this.settings.lockTimeoutMs },
     );
   }
 
-  /** Erro inesperado consome uma tentativa; esgotadas, vira FAILED auditável. Retorna true se falhou de vez. */
-  private recordError(item: ClaimedTransaction): Promise<boolean> {
+  /** Erro inesperado consome uma tentativa; esgotadas, vira FAILED auditável. Retorna o kind se falhou de vez. */
+  private recordError(item: ClaimedTransaction): Promise<string | undefined> {
     return this.uow.run(async ({ transactions }) => {
       const at = this.clock.now();
       const tx = await transactions.lockById(item.id);
-      if (!tx || tx.status !== WagerTransactionStatus.PendingReference) return false;
+      if (!tx || tx.status !== WagerTransactionStatus.PendingReference) return undefined;
       const exhausted = tx.referenceAttempts + 1 >= this.settings.maxReferenceAttempts;
       if (exhausted) tx.fail(FailureCode.ProcessingFailed);
       else {
@@ -141,7 +167,7 @@ export class ReprocessPendingReferences {
         );
       }
       await transactions.update(tx, at);
-      return exhausted;
+      return exhausted ? tx.kind : undefined;
     });
   }
 

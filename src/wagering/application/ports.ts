@@ -22,6 +22,7 @@ export interface WagerTransactionRepository {
    * outra instância não pega o mesmo item, e um crash no meio só atrasa o item até o lease expirar.
    */
   claimDuePendingReferences(now: Date, leaseUntil: Date, limit: number): Promise<ClaimedTransaction[]>;
+  countPendingReferences(): Promise<number>;
   wakeDependents(
     walletId: string,
     providerId: string,

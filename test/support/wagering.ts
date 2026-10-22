@@ -5,6 +5,7 @@ import { MikroOrmUnitOfWork } from '../../src/shared/infra/database/mikro-orm-un
 import { createOrm } from '../../src/shared/infra/database/orm';
 import { failpointsFrom } from '../../src/shared/infra/failpoints';
 import { createLogger } from '../../src/shared/infra/logger';
+import { PromMetrics } from '../../src/shared/infra/metrics';
 import { systemClock, uuidV7Generator } from '../../src/shared/infra/system';
 import { Money } from '../../src/shared/money/money';
 import {
@@ -21,6 +22,7 @@ export const REFERENCE_BACKOFF = { baseMs: 2_000, capMs: 300_000 };
 /** Casos de uso montados direto sobre um banco de teste, sem HTTP. */
 export interface UseCases {
   orm: MikroORM;
+  metrics: PromMetrics;
   openWallet(amount: string): Promise<Wallet>;
   processWager(
     failpoints?: FailpointName[],
@@ -36,7 +38,9 @@ export interface UseCases {
 export async function createUseCases(databaseUrl: string): Promise<UseCases> {
   const orm = await createOrm({ clientUrl: databaseUrl, poolMax: 5 });
   const uow = new MikroOrmUnitOfWork(orm);
+  const metrics = new PromMetrics();
   return {
+    metrics,
     orm,
     openWallet: (amount) =>
       new OpenWallet(uow, uuidV7Generator, systemClock).execute({
@@ -45,19 +49,27 @@ export async function createUseCases(databaseUrl: string): Promise<UseCases> {
         correlationId: 'test',
       }),
     processWager: (failpoints = [], settings = {}) =>
-      new ProcessWagerTransaction(uow, uuidV7Generator, systemClock, failpointsFrom(failpoints.join(',')), {
-        lockTimeoutMs: 3_000,
-        pendingReferenceBaseMs: REFERENCE_BACKOFF.baseMs,
-        maxReferenceAttempts: 10,
-        maxAttempts: 3,
-        ...settings,
-      }),
+      new ProcessWagerTransaction(
+        uow,
+        uuidV7Generator,
+        systemClock,
+        failpointsFrom(failpoints.join(',')),
+        metrics,
+        {
+          lockTimeoutMs: 3_000,
+          pendingReferenceBaseMs: REFERENCE_BACKOFF.baseMs,
+          maxReferenceAttempts: 10,
+          maxAttempts: 3,
+          ...settings,
+        },
+      ),
     reprocess: (clock, options = {}) =>
       new ReprocessPendingReferences(
         uow,
         uuidV7Generator,
         clock,
         failpointsFrom((options.failpoints ?? []).join(',')),
+        metrics,
         createLogger('silent'),
         {
           batchSize: 20,
