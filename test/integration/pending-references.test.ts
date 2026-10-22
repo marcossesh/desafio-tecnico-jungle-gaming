@@ -4,6 +4,7 @@ import type { SQL } from 'bun';
 import { Money } from '../../src/shared/money/money';
 import type { WagerCommand } from '../../src/wagering/application/process-wager-transaction';
 import type { Wallet } from '../../src/wallet/domain/wallet';
+import { startTestApp } from '../support/app';
 import { FakeClock } from '../support/clock';
 import { createTestDatabase, type TestDatabase } from '../support/database';
 import { assertLedgerConsistent } from '../support/ledger';
@@ -190,5 +191,50 @@ describe('pending reference worker', () => {
     const balances =
       await sql`SELECT DISTINCT balance FROM wallets WHERE id IN ${sql(wallets.map((w) => w.id))}`;
     expect(balances).toEqual([{ balance: '100.00' }]);
+  });
+
+  test('the scheduler role resolves pending references in the background', async () => {
+    const api = await startTestApp(db.url, { ROLES: 'api,scheduler', PENDING_REF_TICK_MS: '50' });
+    try {
+      const wallet = await useCases.openWallet('100.00');
+      const betId = `bet-${Bun.randomUUIDv7()}`;
+      const body = (overrides: Record<string, unknown>) => ({
+        providerId: 'provider-a',
+        externalTransactionId: `tx-${Bun.randomUUIDv7()}`,
+        playerId: wallet.playerId,
+        walletId: wallet.id,
+        roundId: 'round-1',
+        gameId: 'fortune-chimp',
+        money: { amount: '10.00', currency: 'BRL' },
+        ...overrides,
+      });
+      const refund = await api.request(
+        'POST',
+        '/wagering/transactions',
+        body({ kind: 'REFUND', referenceExternalTransactionId: betId }),
+        {
+          'idempotency-key': `refund-${betId}`,
+        },
+      );
+      expect(refund.status).toBe(202);
+      await api.request(
+        'POST',
+        '/wagering/transactions',
+        body({ kind: 'BET', externalTransactionId: betId }),
+        {
+          'idempotency-key': betId,
+        },
+      );
+
+      let status = 'PENDING_REFERENCE';
+      for (let i = 0; i < 60 && status === 'PENDING_REFERENCE'; i++) {
+        await Bun.sleep(50);
+        status = (await api.request('GET', `/wagering/transactions/${refund.body.transactionId}`)).body
+          .status;
+      }
+      expect(status).toBe('PROCESSED');
+    } finally {
+      await api.close();
+    }
   });
 });

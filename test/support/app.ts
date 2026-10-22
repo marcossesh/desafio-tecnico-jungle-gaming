@@ -24,14 +24,17 @@ export interface TestApp {
   close(): Promise<void>;
 }
 
-export async function startTestApp(databaseUrl: string): Promise<TestApp> {
-  const env = loadEnv({
+/** Só o papel `api` por padrão: workers em background interfeririam nas asserções; testes os ligam via `env`. */
+export async function startTestApp(databaseUrl: string, env: Record<string, string> = {}): Promise<TestApp> {
+  const config = loadEnv({
     ...process.env,
     DATABASE_URL: databaseUrl,
     SQS_ENDPOINT: process.env.SQS_ENDPOINT ?? 'http://localhost:4566',
     DB_POOL_MAX: '5',
+    ROLES: 'api',
+    ...env,
   });
-  const app = await createApp(env, createLogger(process.env.TEST_LOG_LEVEL ?? 'silent'));
+  const app = await createApp(config, createLogger(process.env.TEST_LOG_LEVEL ?? 'silent'));
   await app.listen(0, '127.0.0.1');
   const baseUrl = await app.getUrl();
 
