@@ -27,7 +27,7 @@ Decisões técnicas, trade-offs, interpretações e limitações do serviço. Se
                                   PostgreSQL (invariantes no schema)
 ```
 
-Todas as instâncias são idênticas e rodam todos os componentes; a variável `ROLES` (`api,consumer,outbox,scheduler`) permite separá-los. Nenhum componente depende de ser único: **o PostgreSQL é o único árbitro de consistência**. No compose, três réplicas ficam atrás de um nginx em `:3000`.
+Todas as instâncias são idênticas e rodam todos os componentes; a variável `ROLES` (`api,consumer,outbox,scheduler`) liga ou desliga os componentes de background (`consumer`, `outbox`, `scheduler`). O servidor HTTP sobe em toda instância, porque `/health` e `/metrics` precisam dele; tirar uma réplica do tráfego de negócio é papel do balanceador. Nenhum componente depende de ser único: **o PostgreSQL é o único árbitro de consistência**. No compose, três réplicas ficam atrás de um nginx em `:3000`.
 
 ## 2. Stack e justificativas
 
@@ -90,7 +90,7 @@ PENDING_REFERENCE ──► PROCESSED | REJECTED | FAILED | PENDING_REFERENCE (n
 |---|---|
 | ausente ou ainda `PENDING_REFERENCE` | `PENDING_REFERENCE` (202) |
 | player, wallet, moeda ou rodada diferente | `REJECTED REFERENCE_MISMATCH` |
-| `REFUND`→não-BET; `ROLLBACK`→∉{BET, WIN, REFUND}; `WIN`→não-BET | `REJECTED REFERENCE_KIND_NOT_ALLOWED` |
+| `REFUND`→não-BET; `ROLLBACK`→∉{BET, WIN, REFUND}; `WIN`/`LOSS`→não-BET | `REJECTED REFERENCE_KIND_NOT_ALLOWED` |
 | referência `REJECTED`/`FAILED` | `REJECTED REFERENCE_NOT_PROCESSED` |
 | valor ≠ valor da referência (reversões) | `REJECTED REFERENCE_AMOUNT_MISMATCH` |
 | referência já revertida | `REJECTED REFERENCE_ALREADY_REVERSED` |
@@ -174,7 +174,7 @@ As garantias de unicidade, imutabilidade e não-negatividade valem no banco, ind
 - **Worker** (`ReprocessPendingReferences`, papel `scheduler`, todas as instâncias):
   - O claim é uma única instrução (`UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING`) que já grava um lease de 30s; se o processo morrer, o item só atrasa.
   - Depois, uma transação por item: lock da wallet, lock da transação, nova checagem do status (item já resolvido por outra instância é ignorado), `applyWager` e os mesmos efeitos de §8.
-- **Limite:** backoff exponencial de 2s até o teto de 5 min, com ±20% de jitter, e **10 tentativas (~15 min)**. Provedores reenviam REFUND/ROLLBACK em segundos ou minutos; uma janela maior deixaria dinheiro "em suspenso" sem benefício. Esgotado o limite → `REJECTED REFERENCE_NOT_FOUND` + `WagerTransactionRejected`. Tentativas sem sucesso não geram evento. Tudo configurável (`PENDING_REF_*`).
+- **Limite:** backoff exponencial de 2s até o teto de 5 min, com ±20% de jitter, e **10 tentativas (~18 min: 2s + 4s + … + 256s + 2 × 300s)**. Provedores reenviam REFUND/ROLLBACK em segundos ou minutos; uma janela maior deixaria dinheiro "em suspenso" sem benefício. Esgotado o limite → `REJECTED REFERENCE_NOT_FOUND` + `WagerTransactionRejected`. Tentativas sem sucesso não geram evento. Tudo configurável (`PENDING_REF_*`).
 - **Erros:** um erro inesperado num item consome tentativa do mesmo orçamento; esgotado → `FAILED PROCESSING_FAILED`, auditável e sem evento, o que evita um item problemático para sempre. Um erro transitório não consome tentativa: o lease já reagenda.
 
 ## 11. Mensageria e falhas
@@ -324,7 +324,7 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 | Variável | Padrão | Uso |
 |---|---|---|
 | `PORT` | 3000 | HTTP (`0` = porta livre; a porta real é logada) |
-| `ROLES` | `api,consumer,outbox,scheduler` | componentes ativos na instância |
+| `ROLES` | `api,consumer,outbox,scheduler` | componentes de background ativos na instância; o HTTP sobe sempre (§1) |
 | `LOG_LEVEL` | `info` | |
 | `SHUTDOWN_GRACE_MS` | 25000 | drain no SIGTERM (compose: `stop_grace_period: 30s`) |
 | `DATABASE_URL` | — (obrigatória) | Postgres, como o role `wagering_app` (§9) |
@@ -355,7 +355,7 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
   - O cliente de teste se comporta como um provedor: em erro de rede ou 503, reenvia a mesma `Idempotency-Key` para outra instância.
 - **Determinismo:** os workers expõem `runOnce()` e recebem `Clock` (os testes avançam o tempo em vez de dormir). Cenários eventuais esperam por condição (`waitFor`), nunca por sleep fixo. O cenário obrigatório da §8 do desafio passou com `--rerun-each 20`.
 - **Mutações:** cada fase foi validada quebrando o código de propósito (por exemplo, sem `FOR UPDATE`, ack antes do commit, sem lease) e confirmando que algum teste falha.
-- **Invariante final de todo teste de integração e concorrência:** `assertLedgerConsistent()` — para cada wallet, `balance = Σ ledger`, `version = última versão do ledger` e `balance = último balance_after`.
+- **Invariante final de todo teste de integração e concorrência que movimenta saldo** (as exceções são `schema.test.ts`, em SQL cru, e `shutdown.test.ts`/`sqs-emulator.test.ts`, que não tocam wallets): `assertLedgerConsistent()` — para cada wallet, `balance = Σ ledger`, `version = última versão do ledger` e `balance = último balance_after`.
 
 | Exigência do desafio (§13) | Arquivo |
 |---|---|
@@ -382,7 +382,7 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 ## 19. Interpretações adotadas
 
 1. **Uma reversão processada por referência, de qualquer tipo.** O desafio diz "não pode ser revertida duas vezes pelo mesmo tipo"; adotamos a forma mais estrita porque `REFUND(BET)` + `ROLLBACK(BET)` creditariam a aposta duas vezes. `ROLLBACK` de um `REFUND` continua permitido (é outra referência).
-2. `WIN` pode referenciar uma `BET` (opcional): se a referência ainda não existir, fica `PENDING_REFERENCE`; se a BET já foi revertida, é rejeitado.
+2. `WIN` e `LOSS` podem referenciar uma `BET` (opcional): se a referência ainda não existir, ficam `PENDING_REFERENCE`; se a BET já foi revertida, são rejeitados.
 3. `LOSS` aceita `amount ≥ 0`; os demais kinds exigem `> 0`.
 4. A chave de inbox é o `messageId` do **corpo** da mensagem, não o `MessageId` do SQS, que muda se o produtor reenviar.
 5. Wallet inexistente não gera transação persistida (não há wallet a associar): `422 WALLET_NOT_FOUND` no HTTP e DLQ no SQS.
@@ -423,7 +423,7 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 
 **Análise**
 
-- **Correção sob carga:** zero erros, zero 5xx, zero retries e **todas as wallets consistentes** na reconciliação em todas as execuções.
+- **Correção sob carga:** zero 5xx, zero retries e **todas as wallets consistentes** na reconciliação em todas as execuções. O único erro registrado foi 1 erro de rede em 11.010 requisições, numa execução exploratória sem limite de taxa e com uma instância dedicada ao outbox.
 - **Throughput limitado por CPU das instâncias:** sem limite, o distributed chega a ~500 req/s com as 3 instâncias Bun perto de 100% de CPU (event loop single-thread); o Postgres usa ~2 cores. Escalar é adicionar instâncias: não há lock global, e wallets diferentes não disputam nada.
 - **Hot wallet é serial por desenho:** o row lock enfileira as transações (até 29 esperando ao mesmo tempo) e a latência é ≈ fila × duração da transação (p50 166ms com 32 usuários). Não houve `LOCK_TIMEOUT` nem conflito de versão: com `FOR UPDATE` cada requisição faz uma única tentativa. É o trade-off escolhido em §6, e o teto (~200 req/s numa wallet) fica muito acima do ritmo de apostas de um jogador.
 - **Outbox lag: até ~400 eventos/s fica abaixo de 1s** (cada aposta gera 2 eventos). O piso de ~0,3s vem do ciclo do publisher (`OUTBOX_TICK_MS` 500). Acima de ~600 eventos/s o lag cresce durante a janela e a fila drena depois. Investigação:
@@ -439,9 +439,9 @@ Para separar o publisher do emulador, a mesma carga rodou contra o **LocalStack 
 | | MiniStack 1.5.30 | LocalStack 2026.10.1 |
 |---|---|---|
 | `SendMessageBatch` FIFO (lote de 10) | 2,7 ms → 17 ms após 12 mil envios | ~2,5 ms, constante |
-| outbox lag p99, distributed a 300 req/s | 8–12 s | 0,79 s |
-| outbox lag p99, distributed sem limite | 41 s (506 req/s) | 1,39 s (384 req/s) |
-| outbox lag p99, hot sem limite | 1,0 s | 0,9 s |
+| outbox lag p99, distributed a 300 req/s | 8–12 s | 0,70–0,73 s |
+| outbox lag p99, distributed sem limite | 41 s (506 req/s) | 1,18 s (384 req/s) |
+| outbox lag p99, hot sem limite | 1,0 s | 0,86 s |
 
 O lag alto do MiniStack é do emulador, não do publisher. O LocalStack usou mais CPU do host compartilhado, daí o throughput HTTP menor sem limite. Mesmo assim, ele **não foi adotado**: além do token, tem um bug de semântica FIFO que afeta o consumidor.
 

@@ -115,7 +115,7 @@ docker compose up -d --wait postgres ministack && bun run sqs:create-queues
 | `bun run test:concurrency` | 50 apostas idênticas, disputa de saldo, reversões concorrentes, wallets em paralelo, 3 processos, crash entre commit e ack, `SIGKILL` sob carga |
 | `bun run test:load` | teste de carga (hot wallet × 100 wallets, 3 instâncias reais; pare as réplicas do compose antes, com `docker compose stop app nginx`, para não disputarem CPU); relatório em `test/load/results/` e análise no ARCHITECTURE §21 |
 
-Cada arquivo de teste usa um banco próprio, clonado de um template migrado, e filas com nome aleatório. Os testes de concorrência sobem processos reais (`bun src/main.ts`). Todo teste de integração e concorrência termina verificando `saldo da wallet == saldo reconstruído pelo ledger`.
+Cada arquivo de teste usa um banco próprio, clonado de um template migrado, e filas com nome aleatório. Os testes de concorrência sobem processos reais (`bun src/main.ts`). Todo teste de integração e concorrência que movimenta saldo termina verificando `saldo da wallet == saldo reconstruído pelo ledger`.
 
 Qualidade: `bun run typecheck` · `bun run lint` · `bun run format`. O CI (`.github/workflows/ci.yml`) roda lint, typecheck e `bun test` com Postgres e MiniStack.
 
