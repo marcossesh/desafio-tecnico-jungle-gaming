@@ -356,28 +356,30 @@ Variáveis de ambiente, validadas com zod no boot. A app não sobe com valor inv
 - **Determinismo:** os workers expõem `runOnce()` e recebem `Clock` (os testes avançam o tempo em vez de dormir). Cenários eventuais esperam por condição (`waitFor`), nunca por sleep fixo. O cenário obrigatório da §8 do desafio passou com `--rerun-each 20`.
 - **Mutações:** cada fase foi validada quebrando o código de propósito (por exemplo, sem `FOR UPDATE`, ack antes do commit, sem lease) e confirmando que algum teste falha.
 - **Invariante final de todo teste de integração e concorrência que movimenta saldo** (as exceções são `schema.test.ts`, em SQL cru, e `shutdown.test.ts`/`sqs-emulator.test.ts`, que não tocam wallets): `assertLedgerConsistent()` — para cada wallet, `balance = Σ ledger`, `version = última versão do ledger` e `balance = último balance_after`.
+- **Última execução no CI** (commit `711a716`): 365 testes em 28 arquivos (161 de unidade, 194 de integração, 10 de concorrência), 0 falhas, 1.735 asserções, ≈ 99 s.
 
-| Exigência do desafio (§13) | Arquivo |
-|---|---|
-| Money: escala, arredondamento, entradas inválidas | `test/unit/money.test.ts` |
-| invariantes da Wallet; conflito de moeda | `test/unit/wallet.test.ts`, `test/unit/wager-applier.test.ts` |
-| regras de BET/WIN/LOSS/REFUND/ROLLBACK; máquina de estados | `test/unit/wager-applier.test.ts`, `test/unit/wager-transaction.test.ts` |
-| idempotency key com payload divergente | `test/unit/payload-hash.test.ts`, `test/integration/wager-transactions.test.ts` |
-| migrations e constraints | `test/integration/schema.test.ts` |
-| atomicidade entre wallet, ledger, inbox e outbox | `test/integration/atomicity.test.ts` |
-| inbox e redelivery | `test/integration/inbox.test.ts`, `test/integration/sqs-consumer.test.ts` |
-| publishers concorrentes sobre a mesma outbox | `test/integration/outbox-publisher.test.ts` |
-| retry e DLQ | `test/integration/sqs-consumer.test.ts` |
-| recuperação após reinicialização | `test/integration/shutdown.test.ts`, `test/concurrency/crash-before-ack.test.ts`, `test/concurrency/restart-consistency.test.ts` |
-| 1. mesma aposta 50× em paralelo | `test/concurrency/duplicate-bet.test.ts` |
-| 2. disputa de saldo (100 vs 2×80) | `test/concurrency/balance-race.test.ts` |
-| reversões concorrentes da mesma referência (no máximo uma) | `test/concurrency/reversal-race.test.ts` |
-| 3. wallets distintas em paralelo | `test/concurrency/parallel-wallets.test.ts` |
-| 4. ≥ 3 processos simultâneos | `test/concurrency/multi-instance.test.ts` |
-| 5. worker morto depois do commit e antes do ack | `test/concurrency/crash-before-ack.test.ts` |
-| 6. dois publishers na mesma outbox | `test/integration/outbox-publisher.test.ts` |
-| 7. ROLLBACK/REFUND antes da referência | `test/integration/pending-references.test.ts`, `test/concurrency/reversal-race.test.ts`, `test/concurrency/restart-consistency.test.ts` |
-| 8. reinício com consistência final comprovada | `test/concurrency/restart-consistency.test.ts` |
+| Exigência do desafio (§13) | Arquivo | Teste representativo |
+|---|---|---|
+| Money: escala, arredondamento, entradas inválidas | `test/unit/money.test.ts` | *more than 2 decimals is rejected, never rounded*; *rejects amount "1e3"* |
+| invariantes da Wallet; conflito de moeda | `test/unit/wallet.test.ts`, `test/unit/wager-applier.test.ts` | *debiting more than the balance throws and leaves the wallet untouched*; *operation currency must match the wallet currency* |
+| regras de BET/WIN/LOSS/REFUND/ROLLBACK; máquina de estados | `test/unit/wager-applier.test.ts`, `test/unit/wager-transaction.test.ts` | *ROLLBACK › that would make the balance negative is rejected with its own code*; *PROCESSED is terminal: every transition throws* |
+| idempotency key com payload divergente | `test/unit/payload-hash.test.ts`, `test/integration/wager-transactions.test.ts` | *same idempotency key with a different amount is a different payload (conflict, not replay)*; *same key with a different payload is IDEMPOTENCY_KEY_REUSED and changes nothing* |
+| migrations e constraints | `test/integration/schema.test.ts` | *up → down → up on an empty database*; *entries cannot be updated, deleted or truncated* |
+| atomicidade entre wallet, ledger, inbox e outbox | `test/integration/atomicity.test.ts` | *processed BET leaves no trace when the commit never happens* |
+| inbox e redelivery | `test/integration/inbox.test.ts`, `test/integration/sqs-consumer.test.ts` | *a redelivered message is a duplicate and has no effect* |
+| publishers concorrentes sobre a mesma outbox | `test/integration/outbox-publisher.test.ts` | *three concurrent publishers send each event exactly once* |
+| retry e DLQ | `test/integration/sqs-consumer.test.ts` | *a transient failure is retried after a visibility backoff and then succeeds*; *a persistent transient failure goes to the DLQ after SQS_MAX_ATTEMPTS receives* |
+| recuperação após reinicialização | `test/integration/shutdown.test.ts`, `test/concurrency/crash-before-ack.test.ts`, `test/concurrency/restart-consistency.test.ts` | *SIGTERM stops every role and exits 0 well within the grace period* |
+| outbox: processo morre depois do commit e antes de publicar (desafio §11) | `test/integration/outbox-publisher.test.ts` | *events claimed by an instance that died are republished after the lease expires* |
+| 1. mesma aposta 50× em paralelo | `test/concurrency/duplicate-bet.test.ts` | *50 identical requests produce one debit and 49 replays of the same result* |
+| 2. disputa de saldo (100 vs 2×80) | `test/concurrency/balance-race.test.ts` | *100.00 vs 2 × 80.00: exactly one PROCESSED, one INSUFFICIENT_FUNDS, final 20.00, one debit* |
+| reversões concorrentes da mesma referência (no máximo uma) | `test/concurrency/reversal-race.test.ts` | *5 REFUNDs and 5 ROLLBACKs of the same BET in parallel credit it back exactly once* |
+| 3. wallets distintas em paralelo | `test/concurrency/parallel-wallets.test.ts` | *bets and wins on 20 wallets interleaved across 3 instances all apply exactly once* |
+| 4. ≥ 3 processos simultâneos | `test/concurrency/multi-instance.test.ts` | *HTTP and SQS traffic with duplicates on shared wallets applies every operation exactly once* |
+| 5. worker morto depois do commit e antes do ack | `test/concurrency/crash-before-ack.test.ts` | *a worker killed after commit and before ack does not duplicate the debit on redelivery* |
+| 6. dois publishers na mesma outbox | `test/integration/outbox-publisher.test.ts` | *three concurrent publishers send each event exactly once* |
+| 7. ROLLBACK/REFUND antes da referência | `test/integration/pending-references.test.ts`, `test/concurrency/reversal-race.test.ts`, `test/concurrency/restart-consistency.test.ts` | *a REFUND that arrived before its BET is resolved once the BET is processed*; *REFUNDs sent together with their BETs all converge to PROCESSED, once each* |
+| 8. reinício com consistência final comprovada | `test/concurrency/restart-consistency.test.ts` | *SIGKILL of random instances under load still converges to consistent wallets* |
 
 ## 19. Interpretações adotadas
 
